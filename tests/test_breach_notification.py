@@ -30,7 +30,8 @@ class TestSeverityNormalization:
 
 class TestShouldAssess:
     def test_always_assess_types(self):
-        for ft in BreachNotificationService.ALWAYS_ASSESS_FINDING_TYPES:
+        from app.services.breach_notification import ALWAYS_ASSESS_FINDING_TYPES
+        for ft in ALWAYS_ASSESS_FINDING_TYPES:
             assert BreachNotificationService.should_assess(ft) is True
 
     def test_pii_in_type(self):
@@ -55,7 +56,7 @@ class TestDetectBreach:
 
     def test_breach_detected_with_high_severity_and_pii(self):
         findings = [self._make_finding(id="f1", severity="high")]
-        result = BreachNotificationService.detect_breach([findings])
+        result = BreachNotificationService.detect_breach(findings)
         assert result.is_breach is True
         assert result.requires_notification is True
         assert result.severity in ("high", "critical")
@@ -63,7 +64,7 @@ class TestDetectBreach:
 
     def test_no_breach_for_low_severity(self):
         findings = [self._make_finding(id="f1", severity="low")]
-        result = BreachNotificationService.detect_breach([findings])
+        result = BreachNotificationService.detect_breach(findings)
         # Low severity without high/critical should not trigger breach
         # (depends on evidence having PII keywords)
         # This finding has PII in evidence but low severity
