@@ -16,6 +16,7 @@ from app.models.entities import (
     Severity,
     Target,
     User,
+    WebhookSubscription,
 )
 
 __all__ = [
@@ -36,5 +37,6 @@ __all__ = [
     "Severity",
     "Target",
     "User",
+    "WebhookSubscription",
 ]
 

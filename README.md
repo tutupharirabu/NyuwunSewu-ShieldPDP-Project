@@ -261,3 +261,98 @@ pytest
 ```
 
 The test suite covers classifier heuristics, PII detection, policy enforcement, false-positive reduction, validation helpers, and API bootstrap/login smoke behavior.
+
+## External Agent Integration (Phantom)
+
+NyuwunSewu supports integration with external AI agents (e.g. Hermes/Phantom)
+that perform interactive vulnerability exploration beyond automated scanning.
+
+### Workflow
+
+```
+[NyuwunSewu scan completes] → Webhook → [Phantom agent notified]
+   ↓
+[Phantom explores target as "nasabah" — login, navigate, test business logic]
+   ↓
+[Phantom finds & chains vulnerabilities]
+   ↓
+[Phantom POST /findings/ingest → NyuwunSewu stores findings]
+   ↓
+[NyuwunSewu includes agent findings in reports]
+```
+
+### Setup
+
+1. **Configure agent secret** in `.env`:
+   ```bash
+   AGENT_SECRET=your-shared-secret-here
+   ```
+
+2. **Register a webhook** (optional — enables push notification to agent):
+   ```bash
+   curl -X POST http://localhost:8000/webhooks \
+     -H "Authorization: Bearer <token>" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "name": "Phantom Agent",
+       "url": "https://your-agent-endpoint/webhook",
+       "events": ["scan.completed", "scan.failed"]
+     }'
+   ```
+
+### Agent Finding Ingestion
+
+Agents submit findings via `POST /findings/ingest` with `X-Agent-Secret` header:
+
+```bash
+curl -X POST http://localhost:8000/findings/ingest \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-Secret: your-shared-secret-here" \
+  -d '{
+    "scan_id": "optional-scan-id",
+    "finding_type": "idor_account_takeover",
+    "title": "IDOR Allows Access to Other Users Data",
+    "severity": "critical",
+    "confidence": 95.0,
+    "description": "...",
+    "reasoning": ["Step 1...", "Step 2..."],
+    "request_method": "GET",
+    "request_url": "https://target/api/accounts/124",
+    "response_status": 200,
+    "response_body": "...",
+    "remediation": "Implement ownership verification",
+    "agent_name": "phantom",
+    "exploit_chain": ["Step 1", "Step 2", "Step 3"]
+  }'
+```
+
+### New API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/webhooks` | List webhook subscriptions |
+| `POST` | `/webhooks` | Create webhook subscription |
+| `GET` | `/webhooks/{id}` | Get webhook details |
+| `PATCH` | `/webhooks/{id}` | Update webhook |
+| `DELETE` | `/webhooks/{id}` | Delete webhook |
+| `POST` | `/findings/ingest` | Submit finding from external agent |
+
+### Webhook Payload
+
+When a scan completes or fails, NyuwunSewu POSTs to registered webhooks:
+
+```json
+{
+  "event": "scan.completed",
+  "scan_id": "abc-123",
+  "target_url": "https://target.example.com",
+  "status": "completed",
+  "findings_count": 5,
+  "endpoints_count": 150,
+  "stats": {"endpoints": 150, "findings": 5, "risk_score": 8.5},
+  "finished_at": "2025-01-01T12:00:00Z"
+}
+```
+
+Webhook payloads are optionally signed with HMAC-SHA256 via the
+`x-nyuwunsewu-signature` header when a `secret` is configured on the subscription.
