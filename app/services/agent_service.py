@@ -216,18 +216,18 @@ async def log_to_telegram(message: str) -> None:
     settings = get_settings()
     telegram_token = getattr(settings, "telegram_bot_token", None)
     telegram_chat_id = getattr(settings, "telegram_chat_id", None)
-    
+
     if not telegram_token or not telegram_chat_id:
         logger.debug("Telegram not configured, skipping log")
         return
-    
+
     url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
     payload = {
         "chat_id": telegram_chat_id,
         "text": message,
         "parse_mode": "HTML",
     }
-    
+
     try:
         timeout = aiohttp.ClientTimeout(total=10)
         async with aiohttp.ClientSession(timeout=timeout) as http_session:
@@ -236,3 +236,31 @@ async def log_to_telegram(message: str) -> None:
                     logger.warning(f"Telegram API error: {resp.status}")
     except Exception as e:
         logger.warning(f"Failed to send Telegram message: {e}")
+
+
+async def find_session_by_prefix(
+    session: AsyncSession,
+    prefix: str,
+) -> AgentSession | None:
+    """Find an agent session by its ID prefix (first 8 chars)."""
+    # Fetch all sessions and match by prefix
+    result = await session.execute(
+        select(AgentSession).order_by(AgentSession.created_at.desc()).limit(100)
+    )
+    sessions = result.scalars().all()
+    for s in sessions:
+        if s.id.lower().startswith(prefix.lower()):
+            return s
+    return None
+
+
+async def list_active_sessions(
+    session: AsyncSession,
+) -> list[AgentSession]:
+    """List all non-completed agent sessions."""
+    result = await session.execute(
+        select(AgentSession)
+        .where(AgentSession.status.notin_(["completed", "failed"]))
+        .order_by(AgentSession.created_at.desc())
+    )
+    return list(result.scalars().all())

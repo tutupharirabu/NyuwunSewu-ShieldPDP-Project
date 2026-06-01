@@ -48,6 +48,7 @@ interface AgentSession {
     requested_at: string;
   } | null;
   findings_count: number;
+  scan_id: string | null;
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
@@ -90,7 +91,10 @@ const logLevelIcons: Record<string, string> = {
 };
 
 export function AgentSessionsPage() {
-  const { data: sessions, loading, error, refresh } = useApi<AgentSession[]>("/agent-sessions");
+  const { data: sessions, loading, error, refresh } = useApi<AgentSession[]>(
+    () => api.agentSessions() as Promise<AgentSession[]>,
+    [],
+  );
   const [selectedSession, setSelectedSession] = useState<AgentSession | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [approvalNotes, setApprovalNotes] = useState("");
@@ -103,9 +107,9 @@ export function AgentSessionsPage() {
 
   const handleApprove = async (sessionId: string, approved: boolean) => {
     try {
-      await api.post(`/agent-sessions/${sessionId}/approve`, {
+      await api.approveAction(sessionId, {
         approved,
-        notes: approvalNotes || undefined
+        notes: approvalNotes || undefined,
       });
       setApprovalNotes("");
       refresh();
