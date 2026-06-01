@@ -1,0 +1,365 @@
+{% extends "base.html" %}
+{% block content %}
+  <style>
+    .report-cover {
+      margin: -18px -20px 22px;
+      padding: 34px 34px 30px;
+      color: white;
+      background:
+        linear-gradient(120deg, rgba(13, 148, 136, 0.96), rgba(37, 99, 235, 0.92)),
+        #0f766e;
+    }
+    .report-kicker {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+      opacity: 0.86;
+    }
+    .report-title {
+      max-width: 900px;
+      margin: 10px 0 12px;
+      font-size: 34px;
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+    .report-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      font-size: 13px;
+      opacity: 0.94;
+    }
+    .report-section {
+      margin-top: 24px;
+      page-break-inside: avoid;
+    }
+    .report-section h2 {
+      margin: 0 0 12px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+    }
+    .summary-card {
+      border: 1px solid #d8e1ea;
+      border-radius: 8px;
+      padding: 14px;
+      background: #ffffff;
+      box-shadow: inset 0 1px 0 rgba(13, 148, 136, 0.08);
+    }
+    .summary-value {
+      color: #0f766e;
+      font-size: 30px;
+      font-weight: 760;
+      line-height: 1;
+    }
+    .summary-label {
+      margin-top: 7px;
+      color: #5f6b7a;
+      font-size: 12px;
+    }
+    .scope-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 10px;
+    }
+    .scope-item {
+      border: 1px solid #d8e1ea;
+      border-radius: 8px;
+      padding: 12px;
+      background: #fff;
+    }
+    .scope-item span {
+      display: block;
+      color: #5f6b7a;
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+    .scope-item strong {
+      display: block;
+      margin-top: 4px;
+      overflow-wrap: anywhere;
+      font-size: 13px;
+    }
+    .severity-strip {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+    }
+    .severity-pill {
+      border-radius: 8px;
+      padding: 9px 10px;
+      color: white;
+      font-weight: 700;
+      font-size: 12px;
+    }
+    .sev-critical { background: #dc2626; }
+    .sev-high { background: #ea580c; }
+    .sev-medium { background: #d97706; }
+    .sev-low { background: #0d9488; }
+    .sev-info { background: #2563eb; }
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid #d8e1ea;
+      border-radius: 8px;
+      overflow: hidden;
+      background: white;
+    }
+    .data-table th {
+      background: #edf5f6;
+      color: #334155;
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+    .data-table th,
+    .data-table td {
+      border-bottom: 1px solid #e5ebf1;
+      padding: 9px;
+      vertical-align: top;
+      font-size: 12px;
+    }
+    .path-cell {
+      max-width: 360px;
+      overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+    }
+    .badge {
+      display: inline-block;
+      margin: 0 4px 4px 0;
+      border-radius: 999px;
+      padding: 3px 7px;
+      background: #e6f7f6;
+      color: #0f766e;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .finding-card {
+      margin-bottom: 14px;
+      border: 1px solid #d8e1ea;
+      border-radius: 8px;
+      background: white;
+      overflow: hidden;
+      page-break-inside: avoid;
+    }
+    .finding-head {
+      display: grid;
+      grid-template-columns: 110px 1fr 120px;
+      gap: 12px;
+      align-items: center;
+      padding: 11px 13px;
+      color: white;
+    }
+    .finding-body {
+      padding: 13px;
+    }
+    .finding-body h4 {
+      margin: 12px 0 6px;
+      font-size: 13px;
+    }
+    .finding-body p,
+    .finding-body li {
+      color: #344054;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .evidence-box {
+      border: 1px solid #d8e1ea;
+      border-radius: 8px;
+      padding: 10px;
+      background: #f8fafc;
+      overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      white-space: pre-wrap;
+    }
+    @media print {
+      body { background: white; }
+      .report-cover { margin: 0 0 20px; }
+      .report-section { page-break-inside: avoid; }
+      .finding-card { page-break-inside: avoid; }
+    }
+  </style>
+
+  <section class="report-cover">
+    <div class="report-kicker">{{ report_type }}</div>
+    <h1 class="report-title">{{ title }}</h1>
+    <div class="report-meta">
+      <span>Generated {{ generated_at|datetime }}</span>
+      <span>Project: {{ scope.project_name }}</span>
+      <span>Target: {{ scope.target_url or "Project aggregate" }}</span>
+      <span>Scan: {{ scope.scan_id|compact if scope.scan_id else "Multiple / aggregate" }}</span>
+    </div>
+  </section>
+
+  <section class="report-section">
+    <h2>Executive Summary</h2>
+    <div class="summary-grid">
+      <div class="summary-card"><div class="summary-value">{{ summary.total_findings }}</div><div class="summary-label">Executive-priority findings</div></div>
+      <div class="summary-card"><div class="summary-value">{{ summary.critical_high_count }}</div><div class="summary-label">Critical and high</div></div>
+      <div class="summary-card"><div class="summary-value">{{ summary.endpoint_count }}</div><div class="summary-label">Affected items discovered</div></div>
+      <div class="summary-card"><div class="summary-value">{{ summary.exploit_count }}</div><div class="summary-label">Confirmed exploit findings</div></div>
+      <div class="summary-card"><div class="summary-value">{{ summary.compliance_control_count }}</div><div class="summary-label">Compliance controls mapped</div></div>
+      <div class="summary-card"><div class="summary-value">{{ summary.max_risk_score }}</div><div class="summary-label">Maximum risk score</div></div>
+    </div>
+  </section>
+
+  <section class="report-section">
+    <h2>Severity Distribution</h2>
+    <div class="severity-strip">
+      {% for severity in severity_order %}
+        <div class="severity-pill sev-{{ severity }}">{{ severity|title }}: {{ severity_counts[severity] }}</div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="report-section">
+    <h2>Scan Scope</h2>
+    <div class="scope-grid">
+      <div class="scope-item"><span>Project</span><strong>{{ scope.project_name }}</strong></div>
+      <div class="scope-item"><span>Target</span><strong>{{ scope.target_url or "Project aggregate" }}</strong></div>
+      <div class="scope-item"><span>Scan ID</span><strong>{{ scope.scan_id or "Multiple / project aggregate" }}</strong></div>
+      <div class="scope-item"><span>Status</span><strong>{{ scope.scan_status or "N/A" }}</strong></div>
+      <div class="scope-item"><span>Started</span><strong>{{ scope.scan_started_at|datetime }}</strong></div>
+      <div class="scope-item"><span>Finished</span><strong>{{ scope.scan_finished_at|datetime }}</strong></div>
+      <div class="scope-item"><span>Policy</span><strong>{{ scope.policy_name or "N/A" }}</strong></div>
+      <div class="scope-item"><span>Paths</span><strong>{{ scope.path_count }} unique path(s)</strong></div>
+    </div>
+  </section>
+
+  <section class="report-section">
+    <h2>Affected Items / Discovered Paths</h2>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Method</th>
+          <th>Path</th>
+          <th>Status</th>
+          <th>Risk</th>
+          <th>Findings</th>
+          <th>Parameters / Tech</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for endpoint in endpoint_rows[:endpoint_row_limit] %}
+          <tr>
+            <td>{{ endpoint.method }}</td>
+            <td class="path-cell">{{ endpoint.path }}</td>
+            <td>{{ endpoint.status_code or "N/A" }}</td>
+            <td>{{ endpoint.risk_score }}</td>
+            <td>
+              <strong>{{ endpoint.finding_count }}</strong>
+              {% if endpoint.highest_severity %}<span class="badge">{{ endpoint.highest_severity }}</span>{% endif %}
+              {% for title in endpoint.finding_titles %}<div>{{ title }}</div>{% endfor %}
+            </td>
+            <td>
+              {% for parameter in endpoint.parameters %}<span class="badge">{{ parameter }}</span>{% endfor %}
+              {% for tech in endpoint.tech_stack[:4] %}<span class="badge">{{ tech }}</span>{% endfor %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6">No endpoints recorded for this report scope.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="report-section">
+    <h2>Confirmed Exploits and Attack Chains</h2>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Severity</th>
+          <th>Exploit</th>
+          <th>Endpoint</th>
+          <th>Mode / Evidence</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for finding in exploit_findings %}
+          <tr>
+            <td><span class="badge sev-{{ finding.severity }}">{{ finding.severity|title }}</span></td>
+            <td><strong>{{ finding.title }}</strong><br>{{ finding.finding_type }}</td>
+            <td class="path-cell">{{ finding.endpoint_url or finding.endpoint_path or "N/A" }}</td>
+            <td>
+              {% if finding.validation_mode %}<div>Mode: {{ finding.validation_mode }}</div>{% endif %}
+              {% if finding.evidence.strategy %}<div>Strategy: {{ finding.evidence.strategy }}</div>{% endif %}
+              {% if finding.evidence.attack_status %}<div>Attack status: {{ finding.evidence.attack_status }}</div>{% endif %}
+              {% if finding.evidence.successful_probes %}<div>Successful probes: {{ finding.evidence.successful_probes|length }}</div>{% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="4">No confirmed exploit execution recorded.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="report-section">
+    <h2>Compliance Matrix</h2>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Framework</th>
+          <th>Control</th>
+          <th>Findings</th>
+          <th>Risk Context</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in compliance_rows %}
+          <tr>
+            <td>{{ row.framework }}</td>
+            <td>{{ row.article_or_control }}</td>
+            <td>{{ row.finding_count }}<br><span class="badge sev-{{ row.severity }}">{{ row.severity }}</span></td>
+            <td>{{ row.business_risk or row.privacy_risk or row.legal_risk }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="4">No compliance mappings generated.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="report-section">
+    <h2>Finding Details</h2>
+    {% for finding in finding_details %}
+      <article class="finding-card">
+        <div class="finding-head sev-{{ finding.severity }}">
+          <strong>{{ finding.severity|upper }}</strong>
+          <strong>{{ finding.title }}</strong>
+          <span>Risk {{ finding.risk_score }}</span>
+        </div>
+        <div class="finding-body">
+          <p><strong>Endpoint:</strong> {{ finding.endpoint_url or finding.endpoint_path or "N/A" }}</p>
+          <p>{{ finding.description }}</p>
+          <h4>Reasoning</h4>
+          <ul>
+            {% for reason in finding.reasoning %}
+              <li>{{ reason }}</li>
+            {% else %}
+              <li>No validation reasoning recorded.</li>
+            {% endfor %}
+          </ul>
+          <h4>Evidence Summary</h4>
+          <div class="evidence-box">{{ finding.evidence|json_preview }}</div>
+          <h4>Compliance</h4>
+          {% for item in finding.compliance %}
+            <span class="badge">{{ item.framework }} {{ item.article_or_control }}</span>
+          {% else %}
+            <span class="badge">No mapping</span>
+          {% endfor %}
+          <h4>Remediation</h4>
+          <p>{{ finding.remediation }}</p>
+        </div>
+      </article>
+    {% else %}
+      <p>No findings in scope.</p>
+    {% endfor %}
+  </section>
+{% endblock %}

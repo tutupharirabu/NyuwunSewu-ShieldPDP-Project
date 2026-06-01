@@ -1,0 +1,66 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: nyuwunsewu
+      POSTGRES_USER: nyuwunsewu
+      POSTGRES_PASSWORD: nyuwunsewu
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nyuwunsewu -d nyuwunsewu"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  web:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+asyncpg://nyuwunsewu:nyuwunsewu@postgres:5432/nyuwunsewu
+      REDIS_URL: redis://redis:6379/0
+      USE_CELERY: "true"
+      SECRET_KEY: replace-with-a-long-random-compose-secret
+      BOOTSTRAP_ADMIN_EMAIL: admin@nyuwunsewu.local
+      BOOTSTRAP_ADMIN_PASSWORD: ChangeMe123!
+      ALLOW_PRIVATE_TARGETS: "false"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: celery -A worker.celery_app.celery_app worker --loglevel=INFO --concurrency=2
+    environment:
+      DATABASE_URL: postgresql+asyncpg://nyuwunsewu:nyuwunsewu@postgres:5432/nyuwunsewu
+      REDIS_URL: redis://redis:6379/0
+      USE_CELERY: "true"
+      SECRET_KEY: replace-with-a-long-random-compose-secret
+      ALLOW_PRIVATE_TARGETS: "false"
+      RUN_MIGRATIONS: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_started
+
+volumes:
+  pgdata:
+

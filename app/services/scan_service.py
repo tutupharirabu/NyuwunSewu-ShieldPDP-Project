@@ -1,0 +1,1050 @@
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+import aiohttp
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.classifier import EndpointClassifier
+from app.compliance.engine import ComplianceMappingEngine
+from app.core.config import get_settings
+from app.core.security import utcnow
+from app.database.session import AsyncSessionLocal
+from app.evidence.engine import EvidenceEngine
+from app.models import (
+    ComplianceMapping,
+    Endpoint,
+    Evidence,
+    Finding,
+    Policy,
+    Project,
+    RemediationTracking,
+    Report,
+    Scan,
+    ScanStatus,
+    Target,
+    User,
+)
+from app.pii_detection.engine import PIIDetectionEngine
+from app.recon import AsyncReconEngine, CrawledEndpoint
+from app.reporting.engine import ReportingEngine
+from app.services.audit_service import AuditService
+from app.services.discovery_validation import DiscoveryValidationService
+from app.services.policy_engine import PolicyEngine, ScanPolicyConfig
+from app.services.risk_engine import RiskPrioritizationEngine
+from app.utils.redaction import redact_headers, redact_text, sanitize_json
+from app.validation.access_matrix import AccessControlMatrixValidator, RoleContext
+from app.validation.api_exposure import SafeAPIExposureValidator
+from app.validation.auth import AuthValidator
+from app.validation.bola import BOLAValidator
+from app.validation.cors import CorsValidationEngine
+from app.validation.exploit_chains import ActiveExploitChainValidator
+from app.validation.path_traversal import PathTraversalValidator
+from app.validation.reflected_html import ReflectedHTMLInjectionValidator
+from app.validation.sqli import LightweightSQLiValidator
+from app.validation.types import ValidationResult
+from app.validation.username_enumeration import UsernameEnumerationValidator
+
+
+class ScanService:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+        self.audit = AuditService(session)
+
+    async def create_scan(
+        self,
+        *,
+        user: User,
+        target_url: str,
+        project_name: str | None,
+        project_id: str | None,
+        policy_payload: dict[str, Any] | None,
+        allowed_domains: list[str] | None,
+        ip_address: str | None,
+    ) -> Scan:
+        if not user.organization_id:
+            raise ValueError("User must belong to an organization to start scans")
+        project = await self._resolve_project(user, project_id, project_name)
+        target = await self._resolve_target(user.organization_id, project.id, target_url, allowed_domains)
+        policy = await self._create_policy(user.organization_id, project.id, policy_payload)
+
+        scan = Scan(
+            organization_id=user.organization_id,
+            project_id=project.id,
+            target_id=target.id,
+            policy_id=policy.id,
+            started_by_id=user.id,
+            status=ScanStatus.QUEUED.value,
+            stats={
+                "phase": "Queued",
+                "progress_percentage": 0,
+                "message": "Queued for validation",
+                "coverage_status": "queued",
+                "endpoints_discovered": 0,
+                "parameters_discovered": 0,
+                "findings_discovered": 0,
+            },
+        )
+        self.session.add(scan)
+        await self.session.flush()
+        await self.audit.log(
+            action="scan.start",
+            resource_type="scan",
+            resource_id=scan.id,
+            user=user,
+            ip_address=ip_address,
+            metadata={"target": target.base_url, "project_id": project.id},
+        )
+        await self.session.commit()
+        return scan
+
+    async def request_stop(self, *, scan: Scan, user: User, ip_address: str | None) -> Scan:
+        scan.stop_requested = True
+        scan.status = ScanStatus.STOPPING.value
+        await self.audit.log(
+            action="scan.stop",
+            resource_type="scan",
+            resource_id=scan.id,
+            user=user,
+            ip_address=ip_address,
+        )
+        await self.session.commit()
+        return scan
+
+    async def _resolve_project(
+        self, user: User, project_id: str | None, project_name: str | None
+    ) -> Project:
+        if project_id:
+            result = await self.session.execute(
+                select(Project).where(
+                    Project.id == project_id,
+                    Project.organization_id == user.organization_id,
+                    Project.is_active.is_(True),
+                )
+            )
+            project = result.scalar_one_or_none()
+            if not project:
+                raise ValueError("Project not found in organization scope")
+            return project
+
+        name = project_name or "Default Security Validation Project"
+        result = await self.session.execute(
+            select(Project).where(
+                Project.organization_id == user.organization_id,
+                Project.name == name,
+            )
+        )
+        project = result.scalar_one_or_none()
+        if project is None:
+            project = Project(
+                organization_id=user.organization_id,
+                owner_id=user.id,
+                name=name,
+                description="Created by scan start workflow",
+            )
+            self.session.add(project)
+            await self.session.flush()
+        return project
+
+    async def _resolve_target(
+        self,
+        organization_id: str,
+        project_id: str,
+        target_url: str,
+        allowed_domains: list[str] | None,
+    ) -> Target:
+        result = await self.session.execute(
+            select(Target).where(
+                Target.organization_id == organization_id,
+                Target.project_id == project_id,
+                Target.base_url == target_url,
+            )
+        )
+        target = result.scalar_one_or_none()
+        if target is None:
+            target = Target(
+                organization_id=organization_id,
+                project_id=project_id,
+                base_url=target_url,
+                allowed_domains=allowed_domains or [],
+            )
+            self.session.add(target)
+            await self.session.flush()
+        return target
+
+    async def _create_policy(
+        self, organization_id: str, project_id: str, payload: dict[str, Any] | None
+    ) -> Policy:
+        payload = payload or {}
+        settings = get_settings()
+        policy = Policy(
+            organization_id=organization_id,
+            project_id=project_id,
+            name=payload.get("name") or "Default MVP Safe Scan Policy",
+            max_requests_per_second=min(
+                float(payload.get("max_requests_per_second", settings.max_requests_per_second)),
+                settings.max_requests_per_second,
+            ),
+            allow_sqli_validation=bool(payload.get("allow_sqli_validation", True)),
+            allow_auth_validation=bool(payload.get("allow_auth_validation", True)),
+            allow_timing_validation=bool(payload.get("allow_timing_validation", False)),
+            excluded_paths=list(payload.get("excluded_paths", [])),
+            forbidden_paths=list(payload.get("forbidden_paths", [])),
+            scope_boundaries=list(payload.get("scope_boundaries", [])),
+            max_depth=int(payload.get("max_depth", settings.max_crawl_depth)),
+            max_pages=int(payload.get("max_pages", settings.max_crawl_pages)),
+        )
+        self.session.add(policy)
+        await self.session.flush()
+        return policy
+
+
+async def run_scan_by_id(scan_id: str, runtime_options: dict[str, Any] | None = None) -> None:
+    runtime_options = runtime_options or {}
+    async with AsyncSessionLocal() as session:
+        runner = ScanRunner(session)
+        await runner.run(scan_id, runtime_options)
+
+
+class ScanRunner:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+        self.classifier = EndpointClassifier()
+        self.pii = PIIDetectionEngine()
+        self.compliance = ComplianceMappingEngine()
+        self.risk = RiskPrioritizationEngine()
+        self.evidence = EvidenceEngine()
+        self.reporting = ReportingEngine()
+        self.discovery = DiscoveryValidationService()
+        self.api_exposure = SafeAPIExposureValidator()
+
+    async def run(self, scan_id: str, runtime_options: dict[str, Any]) -> None:
+        scan = await self.session.get(Scan, scan_id)
+        if scan is None:
+            return
+        try:
+            scan.status = ScanStatus.RUNNING.value
+            scan.started_at = utcnow()
+            scan.stats = self._progress(
+                phase="Target Validation",
+                progress=3,
+                message="Validating target scope and policy",
+            )
+            await self.session.commit()
+
+            target = await self.session.get(Target, scan.target_id)
+            policy_model = await self.session.get(Policy, scan.policy_id)
+            if target is None or policy_model is None:
+                raise RuntimeError("Scan target or policy is missing")
+
+            policy = PolicyEngine(self._policy_config(policy_model))
+            cookie_jar = aiohttp.CookieJar(unsafe=get_settings().allow_private_targets)
+            recon = AsyncReconEngine(
+                base_url=target.base_url,
+                allowed_domains=target.allowed_domains,
+                policy=policy,
+                headers=runtime_options.get("primary_headers"),
+                cookie_jar=cookie_jar,
+                initial_paths=runtime_options.get("initial_paths"),
+                credential_auth=runtime_options.get("credential_auth"),
+            )
+            target_decision = await recon.scope_guard.explain_url_allowed(target.base_url)
+            if not target_decision.allowed:
+                await self._fail_no_coverage(
+                    scan,
+                    reason=target_decision.reason,
+                    diagnostics={"blocked_target": target_decision.__dict__},
+                )
+                return
+
+            credentialed_recon = bool(runtime_options.get("credential_auth"))
+            scan.stats = self._progress(
+                phase="Guest Recon" if credentialed_recon else "Recon",
+                progress=10,
+                message=(
+                    "Mapping guest-accessible routes before login"
+                    if credentialed_recon
+                    else "Crawling reachable in-scope routes"
+                ),
+            )
+            await self.session.commit()
+            recon_progress = asyncio.create_task(self._recon_progress_loop(scan.id, recon, policy))
+            try:
+                endpoints = await recon.crawl()
+            finally:
+                recon_progress.cancel()
+                await asyncio.gather(recon_progress, return_exceptions=True)
+            await self.session.refresh(scan)
+            if scan.stop_requested:
+                scan.status = ScanStatus.STOPPED.value
+                scan.finished_at = utcnow()
+                scan.stats = {
+                    **(scan.stats or {}),
+                    "phase": "Stopped",
+                    "message": "Stopped by user during reconnaissance",
+                    "coverage_status": "stopped",
+                }
+                await self.session.commit()
+                return
+            reachable_endpoints = [endpoint for endpoint in endpoints if endpoint.status_code is not None]
+            if not reachable_endpoints:
+                await self._fail_no_coverage(
+                    scan,
+                    reason=(
+                        "Recon did not receive any reachable in-scope HTTP responses. "
+                        "Check target URL, authentication headers/cookies, scope boundaries, private target settings, and excluded paths."
+                    ),
+                    diagnostics=recon.diagnostics,
+                )
+                return
+
+            scan.stats = self._progress(
+                phase="Endpoint Classification",
+                progress=25,
+                message="Recon complete; classifying endpoints",
+                endpoints_discovered=len(reachable_endpoints),
+                parameters_discovered=recon.diagnostics.get("parameters_discovered", 0),
+                diagnostics=recon.diagnostics,
+            )
+            await self.session.commit()
+
+            validation_options = {**runtime_options}
+            if recon.authenticated_headers:
+                validation_options["primary_headers"] = {
+                    **(runtime_options.get("primary_headers") or {}),
+                    **recon.authenticated_headers,
+                }
+            if recon.authenticated_cookie_header:
+                validation_options["primary_headers"] = {
+                    **(validation_options.get("primary_headers") or {}),
+                    "cookie": recon.authenticated_cookie_header,
+                }
+            validation_options["_reachable_endpoints"] = reachable_endpoints
+
+            timeout = aiohttp.ClientTimeout(total=get_settings().request_timeout_seconds)
+            connector = aiohttp.TCPConnector(limit=30, limit_per_host=6, ttl_dns_cache=300)
+            async with aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector,
+                cookie_jar=cookie_jar,
+                headers={"user-agent": get_settings().user_agent},
+            ) as http_session, aiohttp.ClientSession(
+                timeout=timeout,
+                connector=aiohttp.TCPConnector(limit=12, limit_per_host=4, ttl_dns_cache=300),
+                cookie_jar=aiohttp.DummyCookieJar(),
+                headers={"user-agent": get_settings().user_agent},
+            ) as anonymous_session:
+                for index, crawled in enumerate(reachable_endpoints, start=1):
+                    await self.session.refresh(scan)
+                    if scan.stop_requested:
+                        scan.status = ScanStatus.STOPPED.value
+                        scan.finished_at = utcnow()
+                        scan.stats = {**(scan.stats or {}), "message": "Stopped by user"}
+                        await self.session.commit()
+                        return
+                    endpoint = await self._persist_endpoint(scan, target, crawled)
+                    # Do not hold a database write transaction while validation performs network I/O.
+                    await self.session.commit()
+                    await self._run_discovery_validations(scan, target, endpoint, crawled, policy)
+                    await self._detect_pii_findings(scan, target, endpoint, crawled)
+                    await self._run_authentication_submission_validations(
+                        scan,
+                        target,
+                        endpoint,
+                        crawled,
+                        policy,
+                        recon,
+                        validation_options,
+                    )
+                    await self._run_validators(
+                        scan,
+                        target,
+                        endpoint,
+                        crawled,
+                        policy,
+                        recon,
+                        http_session,
+                        anonymous_session,
+                        validation_options,
+                    )
+                    current_finding_count = await self.session.scalar(
+                        select(func.count(Finding.id)).where(Finding.scan_id == scan.id)
+                    )
+                    scan.stats = self._progress(
+                        phase="Validation",
+                        progress=25 + int((index / max(len(reachable_endpoints), 1)) * 55),
+                        message="Running safe validation engines",
+                        endpoints_discovered=len(reachable_endpoints),
+                        validated_endpoints=index,
+                        parameters_discovered=recon.diagnostics.get("parameters_discovered", 0),
+                        findings_discovered=current_finding_count or 0,
+                        active_validations=self._active_validations(policy),
+                        diagnostics=recon.diagnostics,
+                    )
+                    await self.session.commit()
+
+            await self._generate_default_reports(scan)
+            scan.status = ScanStatus.COMPLETED.value
+            scan.finished_at = utcnow()
+            scan.stats = await self._scan_stats(scan, phase="Completed", progress=100)
+            await self.session.commit()
+        except Exception as exc:
+            scan.status = ScanStatus.FAILED.value
+            scan.error = f"{type(exc).__name__}: {exc}"
+            scan.finished_at = utcnow()
+            scan.stats = {
+                **(scan.stats or {}),
+                "phase": "Failed",
+                "progress_percentage": 100,
+                "message": scan.error,
+                "coverage_status": "failed",
+            }
+            await self.session.commit()
+            raise
+
+    def _policy_config(self, model: Policy) -> ScanPolicyConfig:
+        return ScanPolicyConfig(
+            max_requests_per_second=model.max_requests_per_second,
+            allow_sqli_validation=model.allow_sqli_validation,
+            allow_auth_validation=model.allow_auth_validation,
+            allow_timing_validation=model.allow_timing_validation,
+            excluded_paths=model.excluded_paths,
+            forbidden_paths=model.forbidden_paths,
+            scope_boundaries=model.scope_boundaries,
+            max_depth=model.max_depth,
+            max_pages=model.max_pages,
+        )
+
+    async def _recon_progress_loop(
+        self,
+        scan_id: str,
+        recon: AsyncReconEngine,
+        policy: PolicyEngine,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        while True:
+            await asyncio.sleep(1.0)
+            async with AsyncSessionLocal() as progress_session:
+                scan = await progress_session.get(Scan, scan_id)
+                if scan is None:
+                    return
+                if scan.stop_requested:
+                    recon.request_stop()
+                    return
+                elapsed = loop.time() - started
+                context = str(recon.diagnostics.get("current_context") or "guest")
+                context_count = 2 if recon.credential_auth else 1
+                crawl_budget = max(
+                    4.0, float(policy.policy.max_depth + 1) * 4.0 * context_count
+                )
+                elapsed_ratio = min(1.0, elapsed / crawl_budget)
+                discovery_ratio = min(
+                    1.0,
+                    (len(recon.results) + max(0, len(recon.visited) - 1))
+                    / max(1.0, min(float(policy.policy.max_pages), 100.0)),
+                )
+                recon_ratio = max(elapsed_ratio * 0.85, discovery_ratio)
+                scan.stats = self._progress(
+                    phase="Authenticated Recon" if context == "authenticated" else "Guest Recon",
+                    progress=10 + int(min(0.98, recon_ratio) * 14),
+                    message=(
+                        "Crawling routes available after authenticated session establishment"
+                        if context == "authenticated"
+                        else "Mapping guest-accessible routes before login"
+                    ),
+                    endpoints_discovered=len(recon.results),
+                    parameters_discovered=recon.diagnostics.get("parameters_discovered", 0),
+                    diagnostics=recon.diagnostics,
+                    visited_urls=len(recon.visited),
+                )
+                await progress_session.commit()
+
+    async def _persist_endpoint(
+        self, scan: Scan, target: Target, crawled: CrawledEndpoint
+    ) -> Endpoint:
+        classifications = self.classifier.classify(crawled.url, crawled.method, crawled.forms)
+        endpoint_risk = max((item.risk_score for item in classifications), default=0.0)
+        endpoint = Endpoint(
+            organization_id=scan.organization_id,
+            project_id=scan.project_id,
+            target_id=target.id,
+            scan_id=scan.id,
+            url=crawled.url,
+            method=crawled.method,
+            normalized_path=crawled.normalized_path,
+            status_code=crawled.status_code,
+            title=crawled.title,
+            content_type=crawled.content_type,
+            query_parameters=crawled.query_parameters,
+            forms=sanitize_json(crawled.forms),
+            tech_stack=crawled.tech_stack,
+            classifications=[
+                {
+                    "classification": item.classification,
+                    "confidence": item.confidence,
+                    "risk": item.risk,
+                    "risk_score": item.risk_score,
+                    "reasoning": item.reasoning,
+                }
+                for item in classifications
+            ],
+            risk_score=endpoint_risk,
+        )
+        self.session.add(endpoint)
+        await self.session.flush()
+        return endpoint
+
+    async def _detect_pii_findings(
+        self, scan: Scan, target: Target, endpoint: Endpoint, crawled: CrawledEndpoint
+    ) -> None:
+        detections = self.pii.detect(crawled.response_body_sample)
+        material = [item for item in detections if item.confidence >= 70]
+        if not material:
+            return
+        max_confidence = max(item.confidence for item in material)
+        pii_types = sorted({item.pii_type for item in material})
+        result = ValidationResult(
+            finding_type="pii_exposure",
+            title="PII Exposure Detected in Endpoint Response",
+            severity="high" if any(item.sensitivity == "HIGH" for item in material) else "medium",
+            confidence=max_confidence,
+            endpoint=endpoint.url,
+            description="The response contained personal data or secret-like identifiers.",
+            reasoning=[reason for item in material for reason in item.reasoning],
+            evidence={
+                "validation_mode": "pii_format_context_validation",
+                "pii_types": pii_types,
+                "detections": [
+                    {
+                        "type": item.pii_type,
+                        "sensitivity": item.sensitivity,
+                        "confidence": item.confidence,
+                        "excerpt": item.excerpt,
+                    }
+                    for item in material[:20]
+                ],
+            },
+            remediation=(
+                "Minimize response data, redact sensitive fields by default, and enforce field-level "
+                "authorization for personal data."
+            ),
+            pii_types=pii_types,
+        )
+        await self._persist_finding(scan, target, endpoint, result, crawled)
+
+    async def _run_discovery_validations(
+        self,
+        scan: Scan,
+        target: Target,
+        endpoint: Endpoint,
+        crawled: CrawledEndpoint,
+        policy: PolicyEngine,
+    ) -> None:
+        results = [
+            self.discovery.internal_api_finding(crawled),
+            self.discovery.segmentation_finding(crawled),
+        ]
+        if policy.is_validation_allowed("auth"):
+            results.extend(self.api_exposure.findings(crawled))
+        for result in results:
+            if result:
+                await self._persist_finding(scan, target, endpoint, result, crawled)
+
+    async def _run_authentication_submission_validations(
+        self,
+        scan: Scan,
+        target: Target,
+        endpoint: Endpoint,
+        crawled: CrawledEndpoint,
+        policy: PolicyEngine,
+        recon: AsyncReconEngine,
+        runtime_options: dict[str, Any],
+    ) -> None:
+        observation = recon.authentication_observation
+        if (
+            not policy.is_validation_allowed("auth")
+            or runtime_options.get("_authentication_submission_checked")
+            or observation is None
+            or endpoint.normalized_path != observation.normalized_path
+        ):
+            return
+        runtime_options["_authentication_submission_checked"] = True
+        result = self.api_exposure.authentication_cookie_protection(observation)
+        if result:
+            await self._persist_finding(scan, target, endpoint, result, crawled)
+
+    async def _run_validators(
+        self,
+        scan: Scan,
+        target: Target,
+        endpoint: Endpoint,
+        crawled: CrawledEndpoint,
+        policy: PolicyEngine,
+        recon: AsyncReconEngine,
+        http_session: aiohttp.ClientSession,
+        anonymous_session: aiohttp.ClientSession,
+        runtime_options: dict[str, Any],
+    ) -> None:
+        primary_headers = runtime_options.get("primary_headers") or {}
+        secondary_headers = runtime_options.get("secondary_headers") or {}
+        contexts = self._role_contexts(runtime_options)
+
+        auth_validator = AuthValidator(policy, recon.scope_guard, recon.rate_limiter)
+        if not runtime_options.get("_jwt_checked"):
+            for jwt_result in auth_validator.inspect_jwt(primary_headers):
+                await self._persist_finding(scan, target, endpoint, jwt_result, crawled)
+            runtime_options["_jwt_checked"] = True
+
+        validators = [
+            LightweightSQLiValidator(policy, recon.scope_guard, recon.rate_limiter).validate(
+                crawled, http_session, primary_headers, anonymous_session
+            ),
+            PathTraversalValidator(policy, recon.scope_guard, recon.rate_limiter).validate(
+                crawled, http_session, primary_headers
+            ),
+            ReflectedHTMLInjectionValidator(policy, recon.scope_guard, recon.rate_limiter).validate(
+                crawled, http_session, primary_headers
+            ),
+            BOLAValidator(policy, recon.scope_guard, recon.rate_limiter).validate(
+                crawled, http_session, primary_headers, secondary_headers
+            ),
+            auth_validator.validate_missing_authorization(
+                crawled, http_session, primary_headers, anonymous_session
+            ),
+            AccessControlMatrixValidator(policy, recon.scope_guard, recon.rate_limiter).validate(
+                crawled, http_session, contexts, anonymous_session
+            ),
+            CorsValidationEngine(policy, recon.scope_guard, recon.rate_limiter).validate(
+                crawled, anonymous_session
+            ),
+        ]
+        exploit_options = runtime_options.get("exploit_chains") or {}
+        if (
+            exploit_options.get("enabled")
+            and not runtime_options.get("_exploit_chains_checked")
+        ):
+            runtime_options["_exploit_chains_checked"] = True
+            validators.append(
+                ActiveExploitChainValidator(policy, recon.scope_guard, recon.rate_limiter).validate(
+                    crawled,
+                    http_session,
+                    anonymous_session,
+                    primary_headers,
+                    runtime_options.get("credential_auth"),
+                    exploit_options,
+                    recon.authentication_observation,
+                    runtime_options.get("_reachable_endpoints"),
+                )
+            )
+        credentials = runtime_options.get("credential_auth") or {}
+        if (
+            not runtime_options.get("_username_enumeration_checked")
+            and crawled.normalized_path.lower().rstrip("/") in {"/login", "/signin", "/sign-in", "/session"}
+        ):
+            runtime_options["_username_enumeration_checked"] = True
+            validators.append(
+                UsernameEnumerationValidator(policy, recon.scope_guard, recon.rate_limiter).validate(
+                    crawled,
+                    anonymous_session,
+                    credentials.get("username"),
+                )
+            )
+        if (
+            not runtime_options.get("_jwt_integrity_checked")
+            and auth_validator.is_privilege_endpoint(crawled)
+        ):
+            runtime_options["_jwt_integrity_checked"] = True
+            validators.append(
+                auth_validator.validate_tampered_privilege_claim(
+                    crawled,
+                    anonymous_session,
+                    primary_headers,
+                )
+            )
+        results = await asyncio.gather(*validators, return_exceptions=True)
+        for result in results:
+            if isinstance(result, ValidationResult):
+                await self._persist_finding(scan, target, endpoint, result, crawled)
+            elif (
+                isinstance(result, tuple)
+                and result
+                and isinstance(result[0], ValidationResult)
+            ):
+                await self._persist_finding(scan, target, endpoint, result[0], crawled)
+            elif isinstance(result, list):
+                for item in result:
+                    if isinstance(item, ValidationResult):
+                        await self._persist_finding(scan, target, endpoint, item, crawled)
+            elif isinstance(result, Exception):
+                recon.diagnostics.setdefault("validation_errors", []).append(
+                    {
+                        "endpoint": crawled.url,
+                        "error": type(result).__name__,
+                        "detail": str(result)[:240],
+                    }
+                )
+
+    def _role_contexts(self, runtime_options: dict[str, Any]) -> list[RoleContext]:
+        candidates: list[tuple[str, dict[str, str]]] = [
+            ("primary", runtime_options.get("primary_headers") or {}),
+            ("secondary", runtime_options.get("secondary_headers") or {}),
+            ("admin", runtime_options.get("admin_headers") or {}),
+            ("auditor", runtime_options.get("auditor_headers") or {}),
+        ]
+        for role, headers in (runtime_options.get("custom_role_headers") or {}).items():
+            if isinstance(headers, dict):
+                candidates.append((role, headers))
+        contexts = [RoleContext(name, headers) for name, headers in candidates if headers]
+        if runtime_options.get("primary_headers"):
+            contexts.append(RoleContext("anonymous", {}))
+        return contexts
+
+    async def _persist_finding(
+        self,
+        scan: Scan,
+        target: Target,
+        endpoint: Endpoint,
+        result: ValidationResult,
+        crawled: CrawledEndpoint,
+    ) -> Finding:
+        compliance = self.compliance.map_finding(result.finding_type, result.pii_types)
+        risk = self.risk.score(
+            endpoint_risk=endpoint.risk_score,
+            confidence=result.confidence,
+            has_pii=bool(result.pii_types or result.finding_type == "pii_exposure"),
+            auth_weakness=result.finding_type
+            in {
+                "bola_idor",
+                "missing_authorization",
+                "jwt_weakness",
+                "jwt_privilege_escalation_execution",
+                "jwt_forge_endpoint_exposed",
+                "token_storage_xss_account_takeover_chain",
+                "sqli_auth_bypass",
+                "unauthenticated_sensitive_api_exposure",
+            },
+            public_exposure=True,
+            compliance_impact_count=len(compliance),
+        )
+        metadata = self._finding_metadata(result)
+        severity = self._normalize_severity(result, metadata)
+        risk_score = min(risk.risk_score, self._severity_score_cap(severity))
+        business_impact = self._business_impact(severity, metadata) or risk.business_impact
+        finding = Finding(
+            organization_id=scan.organization_id,
+            project_id=scan.project_id,
+            target_id=target.id,
+            scan_id=scan.id,
+            endpoint_id=endpoint.id,
+            finding_type=result.finding_type,
+            title=result.title,
+            severity=severity,
+            confidence=result.confidence,
+            risk_score=risk_score,
+            description=result.description + f"\n\nBusiness impact: {business_impact}",
+            reasoning=result.reasoning,
+            evidence_summary=sanitize_json({**result.evidence, **metadata}),
+            compliance=[
+                {
+                    "framework": item.framework,
+                    "article_or_control": item.article_or_control,
+                    "privacy_risk": item.privacy_risk,
+                    "legal_risk": item.legal_risk,
+                    "business_risk": item.business_risk,
+                }
+                for item in compliance
+            ],
+            remediation_guidance=result.remediation,
+        )
+        self.session.add(finding)
+        await self.session.flush()
+
+        evidence_payload = self.evidence.build(
+            method=result.request_method or crawled.method,
+            url=result.request_url or result.endpoint,
+            request_headers=result.request_headers or crawled.request_headers or None,
+            request_body=result.request_body,
+            response_status=result.response_status
+            if result.response_status is not None
+            else crawled.status_code,
+            response_headers=result.response_headers or crawled.response_headers,
+            response_body=redact_text(result.response_body or crawled.response_body_sample),
+            steps=[
+                "Run an authorized NyuwunSewu validation scan within the recorded scope.",
+                f"Review finding '{result.title}'.",
+                f"Review endpoint {result.endpoint}.",
+                "Compare validation reasoning and sanitized evidence.",
+            ],
+            http_version=result.http_version or crawled.http_version,
+            response_reason=result.response_reason or crawled.response_reason,
+        )
+        evidence = Evidence(
+            organization_id=scan.organization_id,
+            finding_id=finding.id,
+            **evidence_payload,
+        )
+        self.session.add(evidence)
+
+        for item in compliance:
+            self.session.add(
+                ComplianceMapping(
+                    organization_id=scan.organization_id,
+                    finding_id=finding.id,
+                    framework=item.framework,
+                    article_or_control=item.article_or_control,
+                    privacy_risk=item.privacy_risk,
+                    legal_risk=item.legal_risk,
+                    business_risk=item.business_risk,
+                )
+            )
+
+        self.session.add(
+            RemediationTracking(
+                organization_id=scan.organization_id,
+                finding_id=finding.id,
+                status=finding.status,
+            )
+        )
+        finding.evidence_summary = {
+            **finding.evidence_summary,
+            "evidence_id": evidence_payload["immutable_id"],
+            "evidence_hash": evidence_payload["evidence_hash"],
+        }
+        await self.session.commit()
+        return finding
+
+    def _finding_metadata(self, result: ValidationResult) -> dict[str, Any]:
+        return {
+            "confidence_score": round(float(result.confidence), 1),
+            "confidence_level": result.confidence_level,
+            "exploitability_assessment": result.exploitability_assessment,
+            "reproduction_stability": result.reproduction_stability,
+            "evidence_quality": result.evidence_quality,
+            "false_positive_likelihood": result.false_positive_likelihood,
+        }
+
+    def _normalize_severity(self, result: ValidationResult, metadata: dict[str, Any]) -> str:
+        requested = (result.severity or "info").lower()
+        finding_type = result.finding_type
+        confidence = float(result.confidence or 0)
+        exploitability = str(metadata.get("exploitability_assessment") or "")
+        false_positive_likelihood = str(metadata.get("false_positive_likelihood") or "HIGH")
+
+        if confidence < 65 or false_positive_likelihood == "HIGH":
+            requested = min(requested, "low", key=self._severity_rank)
+
+        if finding_type in {"jwt_observed", "swagger_metadata", "framework_disclosure"}:
+            return "info"
+        if finding_type == "protected_internal_surface":
+            return "info"
+        if finding_type == "internal_api_discovery":
+            return "medium" if result.evidence.get("exposed_sensitive_markers") else "low"
+        if finding_type == "segmentation_exposure":
+            return "low" if requested not in {"info"} else requested
+        if finding_type == "graphql_schema_exposure":
+            return "medium" if requested in {"critical", "high", "medium"} else "low"
+        if finding_type == "client_side_auth_token_storage":
+            return "medium"
+        if finding_type == "modern_vuln_bank_attack_surface":
+            return "low"
+        if finding_type == "jwt_weakness":
+            return "high" if result.evidence.get("alg_none") or result.evidence.get("unsigned_token_accepted") else "medium"
+        if finding_type == "sqli":
+            return "high" if confidence >= 90 and result.evidence.get("confirmed_signal_count", 0) >= 2 else "medium"
+        if finding_type == "sqli_auth_bypass":
+            return "critical" if confidence >= 95 and exploitability == "CONFIRMED_EXPLOIT" else "high"
+        if finding_type in {
+            "jwt_privilege_escalation_execution",
+            "jwt_claim_integrity_bypass",
+            "jwt_forge_endpoint_exposed",
+        }:
+            return "critical" if exploitability == "CONFIRMED_EXPLOIT" and confidence >= 95 else "high"
+        if finding_type in {
+            "unauthenticated_sensitive_api_exposure",
+            "cors_credentials_misconfiguration",
+            "oauth_open_redirect_authorization_code_theft",
+            "access_control_matrix",
+            "missing_authorization",
+            "bola_idor",
+        }:
+            return "high" if confidence >= 85 else "medium"
+        return requested
+
+    def _severity_rank(self, severity: str) -> int:
+        return {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}.get(severity, 0)
+
+    def _severity_score_cap(self, severity: str) -> float:
+        return {
+            "critical": 100.0,
+            "high": 89.0,
+            "medium": 74.0,
+            "low": 49.0,
+            "info": 24.0,
+        }.get(severity, 24.0)
+
+    def _business_impact(self, severity: str, metadata: dict[str, Any]) -> str:
+        if severity == "critical":
+            return "Immediate executive attention; confirmed exploitability with replayable evidence."
+        if severity == "high":
+            return "High-priority remediation; validated exposure with material security or privacy impact."
+        if severity == "medium":
+            return "Track in remediation roadmap; evidence indicates a bounded security weakness."
+        if severity == "low":
+            return "Attack surface or hardening signal; review through normal backlog."
+        return "Informational signal for governance visibility."
+
+    async def _generate_default_reports(self, scan: Scan) -> None:
+        result = await self.session.execute(
+            select(Finding).where(Finding.scan_id == scan.id, Finding.organization_id == scan.organization_id)
+        )
+        findings = list(result.scalars().all())
+        if not findings:
+            return
+        endpoint_result = await self.session.execute(
+            select(Endpoint)
+            .where(Endpoint.scan_id == scan.id, Endpoint.organization_id == scan.organization_id)
+            .order_by(Endpoint.risk_score.desc(), Endpoint.created_at.asc())
+        )
+        context = {
+            "project": await self.session.get(Project, scan.project_id),
+            "target": await self.session.get(Target, scan.target_id),
+            "policy": await self.session.get(Policy, scan.policy_id),
+            "scan": scan,
+            "generated_by": await self.session.get(User, scan.started_by_id),
+            "endpoints": list(endpoint_result.scalars().all()),
+        }
+        html = self.reporting.render_html(
+            title="NyuwunSewu Security Validation Report",
+            findings=findings,
+            report_type="Technical Report",
+            context=context,
+        )
+        report = self.reporting.build_report_row(
+            organization_id=scan.organization_id,
+            project_id=scan.project_id,
+            scan_id=scan.id,
+            generated_by_id=scan.started_by_id,
+            report_type="Technical Report",
+            export_format="html",
+            title="Security Validation Technical Report",
+            content=html,
+        )
+        self.session.add(report)
+        executive_html = self.reporting.render_html(
+            title="NyuwunSewu Executive Summary",
+            findings=findings,
+            report_type="Executive Summary",
+            context=context,
+        )
+        self.session.add(
+            self.reporting.build_report_row(
+                organization_id=scan.organization_id,
+                project_id=scan.project_id,
+                scan_id=scan.id,
+                generated_by_id=scan.started_by_id,
+                report_type="Executive Summary",
+                export_format="html",
+                title="Executive Summary",
+                content=executive_html,
+            )
+        )
+        await self.session.flush()
+
+    async def _scan_stats(self, scan: Scan, phase: str, progress: int) -> dict[str, Any]:
+        endpoint_count = await self.session.scalar(
+            select(func.count(Endpoint.id)).where(Endpoint.scan_id == scan.id)
+        )
+        finding_count = await self.session.scalar(
+            select(func.count(Finding.id)).where(Finding.scan_id == scan.id)
+        )
+        report_count = await self.session.scalar(
+            select(func.count(Report.id)).where(Report.scan_id == scan.id)
+        )
+        max_risk = await self.session.scalar(
+            select(func.max(Finding.risk_score)).where(Finding.scan_id == scan.id)
+        )
+        compliance_count = await self.session.scalar(
+            select(func.count(ComplianceMapping.id)).where(ComplianceMapping.finding_id.in_(
+                select(Finding.id).where(Finding.scan_id == scan.id)
+            ))
+        )
+        previous = scan.stats or {}
+        return {
+            **previous,
+            "message": "Completed",
+            "phase": phase,
+            "progress_percentage": progress,
+            "endpoints": endpoint_count or 0,
+            "endpoints_discovered": endpoint_count or 0,
+            "findings": finding_count or 0,
+            "findings_discovered": finding_count or 0,
+            "reports": report_count or 0,
+            "risk_score": round(float(max_risk or 0), 2),
+            "compliance_impact": compliance_count or 0,
+            "coverage_status": "complete",
+        }
+
+    def _progress(self, *, phase: str, progress: int, message: str, **extra: Any) -> dict[str, Any]:
+        return {
+            "phase": phase,
+            "progress_percentage": max(0, min(100, progress)),
+            "message": message,
+            "endpoints_discovered": extra.pop("endpoints_discovered", 0),
+            "parameters_discovered": extra.pop("parameters_discovered", 0),
+            "findings_discovered": extra.pop("findings_discovered", 0),
+            "active_validations": extra.pop("active_validations", []),
+            "risk_score": extra.pop("risk_score", 0),
+            "compliance_impact": extra.pop("compliance_impact", 0),
+            "coverage_status": "running",
+            **extra,
+        }
+
+    def _active_validations(self, policy: PolicyEngine) -> list[str]:
+        validations = ["pii_detection", "segmentation"]
+        if policy.is_validation_allowed("sqli"):
+            validations.append("sqli")
+        if policy.is_validation_allowed("path_traversal"):
+            validations.append("path_traversal")
+        if policy.is_validation_allowed("reflected_html"):
+            validations.append("reflected_html_injection")
+        if policy.is_validation_allowed("timing"):
+            validations.append("timing")
+        if policy.is_validation_allowed("auth"):
+            validations.extend(
+                [
+                    "auth",
+                    "access_matrix",
+                    "bola_idor",
+                    "api_exposure",
+                    "cors",
+                    "username_enumeration",
+                    "jwt_integrity_negative_control",
+                ]
+            )
+        return validations
+
+    async def _fail_no_coverage(
+        self,
+        scan: Scan,
+        *,
+        reason: str,
+        diagnostics: dict[str, Any] | None = None,
+    ) -> None:
+        scan.status = ScanStatus.FAILED.value
+        scan.finished_at = utcnow()
+        scan.error = reason
+        scan.stats = self._progress(
+            phase="No Coverage",
+            progress=100,
+            message=reason,
+            diagnostics=diagnostics or {},
+        ) | {
+            "coverage_status": "no_coverage",
+            "endpoints": 0,
+            "findings": 0,
+            "reports": 0,
+        }
+        await self.session.commit()

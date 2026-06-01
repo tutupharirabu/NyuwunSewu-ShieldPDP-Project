@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="grid">
+    <section class="card">
+      <div class="metric {% if dashboard.compliance_score >= 80 %}score-ok{% elif dashboard.compliance_score >= 55 %}score-warn{% else %}score-danger{% endif %}">
+        {{ dashboard.compliance_score }}
+      </div>
+      <div class="label">Compliance score</div>
+    </section>
+    <section class="card">
+      <div class="metric {% if dashboard.security_score >= 80 %}score-ok{% elif dashboard.security_score >= 55 %}score-warn{% else %}score-danger{% endif %}">
+        {{ dashboard.security_score }}
+      </div>
+      <div class="label">Security score</div>
+    </section>
+    <section class="card">
+      <div class="metric">{{ dashboard.unresolved_findings }}</div>
+      <div class="label">Unresolved findings</div>
+    </section>
+    <section class="card">
+      <div class="metric score-danger">{{ dashboard.critical_findings }}</div>
+      <div class="label">Critical findings</div>
+    </section>
+    <section class="card">
+      <div class="metric">{{ dashboard.remediation_progress }}%</div>
+      <div class="label">Remediation progress</div>
+    </section>
+  </div>
+
+  <h2 class="section-title">Severity Breakdown</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Severity</th>
+        <th>Findings</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for severity, count in dashboard.severity_breakdown.items() %}
+        <tr>
+          <td>{{ severity }}</td>
+          <td>{{ count }}</td>
+        </tr>
+      {% else %}
+        <tr>
+          <td colspan="2">No findings recorded</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}
+
