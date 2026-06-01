@@ -34,12 +34,13 @@ from app.services.audit_service import AuditService
 from app.services.discovery_validation import DiscoveryValidationService
 from app.services.policy_engine import PolicyEngine, ScanPolicyConfig
 from app.services.risk_engine import RiskPrioritizationEngine
-from app.utils.redaction import redact_headers, redact_text, sanitize_json
+from app.utils.redaction import redact_text, sanitize_json
 from app.validation.access_matrix import AccessControlMatrixValidator, RoleContext
 from app.validation.api_exposure import SafeAPIExposureValidator
 from app.validation.auth import AuthValidator
 from app.validation.bola import BOLAValidator
 from app.validation.cors import CorsValidationEngine
+from app.validation.data_rights import DataRightsValidationEngine
 from app.validation.exploit_chains import ActiveExploitChainValidator
 from app.validation.path_traversal import PathTraversalValidator
 from app.validation.reflected_html import ReflectedHTMLInjectionValidator
@@ -67,8 +68,12 @@ class ScanService:
         if not user.organization_id:
             raise ValueError("User must belong to an organization to start scans")
         project = await self._resolve_project(user, project_id, project_name)
-        target = await self._resolve_target(user.organization_id, project.id, target_url, allowed_domains)
-        policy = await self._create_policy(user.organization_id, project.id, policy_payload)
+        target = await self._resolve_target(
+            user.organization_id, project.id, target_url, allowed_domains
+        )
+        policy = await self._create_policy(
+            user.organization_id, project.id, policy_payload
+        )
 
         scan = Scan(
             organization_id=user.organization_id,
@@ -100,7 +105,9 @@ class ScanService:
         await self.session.commit()
         return scan
 
-    async def request_stop(self, *, scan: Scan, user: User, ip_address: str | None) -> Scan:
+    async def request_stop(
+        self, *, scan: Scan, user: User, ip_address: str | None
+    ) -> Scan:
         scan.stop_requested = True
         scan.status = ScanStatus.STOPPING.value
         await self.audit.log(
@@ -184,7 +191,11 @@ class ScanService:
             project_id=project_id,
             name=payload.get("name") or "Default MVP Safe Scan Policy",
             max_requests_per_second=min(
-                float(payload.get("max_requests_per_second", settings.max_requests_per_second)),
+                float(
+                    payload.get(
+                        "max_requests_per_second", settings.max_requests_per_second
+                    )
+                ),
                 settings.max_requests_per_second,
             ),
             allow_sqli_validation=bool(payload.get("allow_sqli_validation", True)),
@@ -201,7 +212,9 @@ class ScanService:
         return policy
 
 
-async def run_scan_by_id(scan_id: str, runtime_options: dict[str, Any] | None = None) -> None:
+async def run_scan_by_id(
+    scan_id: str, runtime_options: dict[str, Any] | None = None
+) -> None:
     runtime_options = runtime_options or {}
     async with AsyncSessionLocal() as session:
         runner = ScanRunner(session)
@@ -250,7 +263,9 @@ class ScanRunner:
                 initial_paths=runtime_options.get("initial_paths"),
                 credential_auth=runtime_options.get("credential_auth"),
             )
-            target_decision = await recon.scope_guard.explain_url_allowed(target.base_url)
+            target_decision = await recon.scope_guard.explain_url_allowed(
+                target.base_url
+            )
             if not target_decision.allowed:
                 await self._fail_no_coverage(
                     scan,
@@ -270,7 +285,9 @@ class ScanRunner:
                 ),
             )
             await self.session.commit()
-            recon_progress = asyncio.create_task(self._recon_progress_loop(scan.id, recon, policy))
+            recon_progress = asyncio.create_task(
+                self._recon_progress_loop(scan.id, recon, policy)
+            )
             try:
                 endpoints = await recon.crawl()
             finally:
@@ -288,7 +305,9 @@ class ScanRunner:
                 }
                 await self.session.commit()
                 return
-            reachable_endpoints = [endpoint for endpoint in endpoints if endpoint.status_code is not None]
+            reachable_endpoints = [
+                endpoint for endpoint in endpoints if endpoint.status_code is not None
+            ]
             if not reachable_endpoints:
                 await self._fail_no_coverage(
                     scan,
@@ -323,31 +342,45 @@ class ScanRunner:
                 }
             validation_options["_reachable_endpoints"] = reachable_endpoints
 
-            timeout = aiohttp.ClientTimeout(total=get_settings().request_timeout_seconds)
-            connector = aiohttp.TCPConnector(limit=30, limit_per_host=6, ttl_dns_cache=300)
-            async with aiohttp.ClientSession(
-                timeout=timeout,
-                connector=connector,
-                cookie_jar=cookie_jar,
-                headers={"user-agent": get_settings().user_agent},
-            ) as http_session, aiohttp.ClientSession(
-                timeout=timeout,
-                connector=aiohttp.TCPConnector(limit=12, limit_per_host=4, ttl_dns_cache=300),
-                cookie_jar=aiohttp.DummyCookieJar(),
-                headers={"user-agent": get_settings().user_agent},
-            ) as anonymous_session:
+            timeout = aiohttp.ClientTimeout(
+                total=get_settings().request_timeout_seconds
+            )
+            connector = aiohttp.TCPConnector(
+                limit=30, limit_per_host=6, ttl_dns_cache=300
+            )
+            async with (
+                aiohttp.ClientSession(
+                    timeout=timeout,
+                    connector=connector,
+                    cookie_jar=cookie_jar,
+                    headers={"user-agent": get_settings().user_agent},
+                ) as http_session,
+                aiohttp.ClientSession(
+                    timeout=timeout,
+                    connector=aiohttp.TCPConnector(
+                        limit=12, limit_per_host=4, ttl_dns_cache=300
+                    ),
+                    cookie_jar=aiohttp.DummyCookieJar(),
+                    headers={"user-agent": get_settings().user_agent},
+                ) as anonymous_session,
+            ):
                 for index, crawled in enumerate(reachable_endpoints, start=1):
                     await self.session.refresh(scan)
                     if scan.stop_requested:
                         scan.status = ScanStatus.STOPPED.value
                         scan.finished_at = utcnow()
-                        scan.stats = {**(scan.stats or {}), "message": "Stopped by user"}
+                        scan.stats = {
+                            **(scan.stats or {}),
+                            "message": "Stopped by user",
+                        }
                         await self.session.commit()
                         return
                     endpoint = await self._persist_endpoint(scan, target, crawled)
                     # Do not hold a database write transaction while validation performs network I/O.
                     await self.session.commit()
-                    await self._run_discovery_validations(scan, target, endpoint, crawled, policy)
+                    await self._run_discovery_validations(
+                        scan, target, endpoint, crawled, policy
+                    )
                     await self._detect_pii_findings(scan, target, endpoint, crawled)
                     await self._run_authentication_submission_validations(
                         scan,
@@ -374,16 +407,30 @@ class ScanRunner:
                     )
                     scan.stats = self._progress(
                         phase="Validation",
-                        progress=25 + int((index / max(len(reachable_endpoints), 1)) * 55),
+                        progress=25
+                        + int((index / max(len(reachable_endpoints), 1)) * 55),
                         message="Running safe validation engines",
                         endpoints_discovered=len(reachable_endpoints),
                         validated_endpoints=index,
-                        parameters_discovered=recon.diagnostics.get("parameters_discovered", 0),
+                        parameters_discovered=recon.diagnostics.get(
+                            "parameters_discovered", 0
+                        ),
                         findings_discovered=current_finding_count or 0,
                         active_validations=self._active_validations(policy),
                         diagnostics=recon.diagnostics,
                     )
                     await self.session.commit()
+
+            # Run data subject rights assessment (Pasal 22 UU PDP)
+            scan.stats = self._progress(
+                phase="Data Rights Validation",
+                progress=85,
+                message="Testing Right to be Forgotten, Access, and Rectification",
+            )
+            await self.session.commit()
+            await self._run_data_rights_validation(
+                scan, target, recon, validation_options, policy
+            )
 
             await self._generate_default_reports(scan)
             scan.status = ScanStatus.COMPLETED.value
@@ -450,7 +497,9 @@ class ScanRunner:
                 )
                 recon_ratio = max(elapsed_ratio * 0.85, discovery_ratio)
                 scan.stats = self._progress(
-                    phase="Authenticated Recon" if context == "authenticated" else "Guest Recon",
+                    phase="Authenticated Recon"
+                    if context == "authenticated"
+                    else "Guest Recon",
                     progress=10 + int(min(0.98, recon_ratio) * 14),
                     message=(
                         "Crawling routes available after authenticated session establishment"
@@ -458,7 +507,9 @@ class ScanRunner:
                         else "Mapping guest-accessible routes before login"
                     ),
                     endpoints_discovered=len(recon.results),
-                    parameters_discovered=recon.diagnostics.get("parameters_discovered", 0),
+                    parameters_discovered=recon.diagnostics.get(
+                        "parameters_discovered", 0
+                    ),
                     diagnostics=recon.diagnostics,
                     visited_urls=len(recon.visited),
                 )
@@ -467,7 +518,9 @@ class ScanRunner:
     async def _persist_endpoint(
         self, scan: Scan, target: Target, crawled: CrawledEndpoint
     ) -> Endpoint:
-        classifications = self.classifier.classify(crawled.url, crawled.method, crawled.forms)
+        classifications = self.classifier.classify(
+            crawled.url, crawled.method, crawled.forms
+        )
         endpoint_risk = max((item.risk_score for item in classifications), default=0.0)
         endpoint = Endpoint(
             organization_id=scan.organization_id,
@@ -511,7 +564,9 @@ class ScanRunner:
         result = ValidationResult(
             finding_type="pii_exposure",
             title="PII Exposure Detected in Endpoint Response",
-            severity="high" if any(item.sensitivity == "HIGH" for item in material) else "medium",
+            severity="high"
+            if any(item.sensitivity == "HIGH" for item in material)
+            else "medium",
             confidence=max_confidence,
             endpoint=endpoint.url,
             description="The response contained personal data or secret-like identifiers.",
@@ -601,36 +656,37 @@ class ScanRunner:
             runtime_options["_jwt_checked"] = True
 
         validators = [
-            LightweightSQLiValidator(policy, recon.scope_guard, recon.rate_limiter).validate(
-                crawled, http_session, primary_headers, anonymous_session
-            ),
-            PathTraversalValidator(policy, recon.scope_guard, recon.rate_limiter).validate(
-                crawled, http_session, primary_headers
-            ),
-            ReflectedHTMLInjectionValidator(policy, recon.scope_guard, recon.rate_limiter).validate(
-                crawled, http_session, primary_headers
-            ),
+            LightweightSQLiValidator(
+                policy, recon.scope_guard, recon.rate_limiter
+            ).validate(crawled, http_session, primary_headers, anonymous_session),
+            PathTraversalValidator(
+                policy, recon.scope_guard, recon.rate_limiter
+            ).validate(crawled, http_session, primary_headers),
+            ReflectedHTMLInjectionValidator(
+                policy, recon.scope_guard, recon.rate_limiter
+            ).validate(crawled, http_session, primary_headers),
             BOLAValidator(policy, recon.scope_guard, recon.rate_limiter).validate(
                 crawled, http_session, primary_headers, secondary_headers
             ),
             auth_validator.validate_missing_authorization(
                 crawled, http_session, primary_headers, anonymous_session
             ),
-            AccessControlMatrixValidator(policy, recon.scope_guard, recon.rate_limiter).validate(
-                crawled, http_session, contexts, anonymous_session
-            ),
-            CorsValidationEngine(policy, recon.scope_guard, recon.rate_limiter).validate(
-                crawled, anonymous_session
-            ),
+            AccessControlMatrixValidator(
+                policy, recon.scope_guard, recon.rate_limiter
+            ).validate(crawled, http_session, contexts, anonymous_session),
+            CorsValidationEngine(
+                policy, recon.scope_guard, recon.rate_limiter
+            ).validate(crawled, anonymous_session),
         ]
         exploit_options = runtime_options.get("exploit_chains") or {}
-        if (
-            exploit_options.get("enabled")
-            and not runtime_options.get("_exploit_chains_checked")
+        if exploit_options.get("enabled") and not runtime_options.get(
+            "_exploit_chains_checked"
         ):
             runtime_options["_exploit_chains_checked"] = True
             validators.append(
-                ActiveExploitChainValidator(policy, recon.scope_guard, recon.rate_limiter).validate(
+                ActiveExploitChainValidator(
+                    policy, recon.scope_guard, recon.rate_limiter
+                ).validate(
                     crawled,
                     http_session,
                     anonymous_session,
@@ -642,22 +698,27 @@ class ScanRunner:
                 )
             )
         credentials = runtime_options.get("credential_auth") or {}
-        if (
-            not runtime_options.get("_username_enumeration_checked")
-            and crawled.normalized_path.lower().rstrip("/") in {"/login", "/signin", "/sign-in", "/session"}
-        ):
+        if not runtime_options.get(
+            "_username_enumeration_checked"
+        ) and crawled.normalized_path.lower().rstrip("/") in {
+            "/login",
+            "/signin",
+            "/sign-in",
+            "/session",
+        }:
             runtime_options["_username_enumeration_checked"] = True
             validators.append(
-                UsernameEnumerationValidator(policy, recon.scope_guard, recon.rate_limiter).validate(
+                UsernameEnumerationValidator(
+                    policy, recon.scope_guard, recon.rate_limiter
+                ).validate(
                     crawled,
                     anonymous_session,
                     credentials.get("username"),
                 )
             )
-        if (
-            not runtime_options.get("_jwt_integrity_checked")
-            and auth_validator.is_privilege_endpoint(crawled)
-        ):
+        if not runtime_options.get(
+            "_jwt_integrity_checked"
+        ) and auth_validator.is_privilege_endpoint(crawled):
             runtime_options["_jwt_integrity_checked"] = True
             validators.append(
                 auth_validator.validate_tampered_privilege_claim(
@@ -679,7 +740,9 @@ class ScanRunner:
             elif isinstance(result, list):
                 for item in result:
                     if isinstance(item, ValidationResult):
-                        await self._persist_finding(scan, target, endpoint, item, crawled)
+                        await self._persist_finding(
+                            scan, target, endpoint, item, crawled
+                        )
             elif isinstance(result, Exception):
                 recon.diagnostics.setdefault("validation_errors", []).append(
                     {
@@ -699,7 +762,9 @@ class ScanRunner:
         for role, headers in (runtime_options.get("custom_role_headers") or {}).items():
             if isinstance(headers, dict):
                 candidates.append((role, headers))
-        contexts = [RoleContext(name, headers) for name, headers in candidates if headers]
+        contexts = [
+            RoleContext(name, headers) for name, headers in candidates if headers
+        ]
         if runtime_options.get("primary_headers"):
             contexts.append(RoleContext("anonymous", {}))
         return contexts
@@ -734,7 +799,9 @@ class ScanRunner:
         metadata = self._finding_metadata(result)
         severity = self._normalize_severity(result, metadata)
         risk_score = min(risk.risk_score, self._severity_score_cap(severity))
-        business_impact = self._business_impact(severity, metadata) or risk.business_impact
+        business_impact = (
+            self._business_impact(severity, metadata) or risk.business_impact
+        )
         finding = Finding(
             organization_id=scan.organization_id,
             project_id=scan.project_id,
@@ -773,7 +840,9 @@ class ScanRunner:
             if result.response_status is not None
             else crawled.status_code,
             response_headers=result.response_headers or crawled.response_headers,
-            response_body=redact_text(result.response_body or crawled.response_body_sample),
+            response_body=redact_text(
+                result.response_body or crawled.response_body_sample
+            ),
             steps=[
                 "Run an authorized NyuwunSewu validation scan within the recorded scope.",
                 f"Review finding '{result.title}'.",
@@ -828,12 +897,16 @@ class ScanRunner:
             "false_positive_likelihood": result.false_positive_likelihood,
         }
 
-    def _normalize_severity(self, result: ValidationResult, metadata: dict[str, Any]) -> str:
+    def _normalize_severity(
+        self, result: ValidationResult, metadata: dict[str, Any]
+    ) -> str:
         requested = (result.severity or "info").lower()
         finding_type = result.finding_type
         confidence = float(result.confidence or 0)
         exploitability = str(metadata.get("exploitability_assessment") or "")
-        false_positive_likelihood = str(metadata.get("false_positive_likelihood") or "HIGH")
+        false_positive_likelihood = str(
+            metadata.get("false_positive_likelihood") or "HIGH"
+        )
 
         if confidence < 65 or false_positive_likelihood == "HIGH":
             requested = min(requested, "low", key=self._severity_rank)
@@ -843,7 +916,9 @@ class ScanRunner:
         if finding_type == "protected_internal_surface":
             return "info"
         if finding_type == "internal_api_discovery":
-            return "medium" if result.evidence.get("exposed_sensitive_markers") else "low"
+            return (
+                "medium" if result.evidence.get("exposed_sensitive_markers") else "low"
+            )
         if finding_type == "segmentation_exposure":
             return "low" if requested not in {"info"} else requested
         if finding_type == "graphql_schema_exposure":
@@ -853,17 +928,35 @@ class ScanRunner:
         if finding_type == "modern_vuln_bank_attack_surface":
             return "low"
         if finding_type == "jwt_weakness":
-            return "high" if result.evidence.get("alg_none") or result.evidence.get("unsigned_token_accepted") else "medium"
+            return (
+                "high"
+                if result.evidence.get("alg_none")
+                or result.evidence.get("unsigned_token_accepted")
+                else "medium"
+            )
         if finding_type == "sqli":
-            return "high" if confidence >= 90 and result.evidence.get("confirmed_signal_count", 0) >= 2 else "medium"
+            return (
+                "high"
+                if confidence >= 90
+                and result.evidence.get("confirmed_signal_count", 0) >= 2
+                else "medium"
+            )
         if finding_type == "sqli_auth_bypass":
-            return "critical" if confidence >= 95 and exploitability == "CONFIRMED_EXPLOIT" else "high"
+            return (
+                "critical"
+                if confidence >= 95 and exploitability == "CONFIRMED_EXPLOIT"
+                else "high"
+            )
         if finding_type in {
             "jwt_privilege_escalation_execution",
             "jwt_claim_integrity_bypass",
             "jwt_forge_endpoint_exposed",
         }:
-            return "critical" if exploitability == "CONFIRMED_EXPLOIT" and confidence >= 95 else "high"
+            return (
+                "critical"
+                if exploitability == "CONFIRMED_EXPLOIT" and confidence >= 95
+                else "high"
+            )
         if finding_type in {
             "unauthenticated_sensitive_api_exposure",
             "cors_credentials_misconfiguration",
@@ -876,7 +969,9 @@ class ScanRunner:
         return requested
 
     def _severity_rank(self, severity: str) -> int:
-        return {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}.get(severity, 0)
+        return {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}.get(
+            severity, 0
+        )
 
     def _severity_score_cap(self, severity: str) -> float:
         return {
@@ -898,16 +993,185 @@ class ScanRunner:
             return "Attack surface or hardening signal; review through normal backlog."
         return "Informational signal for governance visibility."
 
+    async def _run_data_rights_validation(
+        self,
+        scan: Scan,
+        target: Target,
+        recon: AsyncReconEngine,
+        runtime_options: dict[str, Any],
+        policy: PolicyEngine,
+    ) -> None:
+        """Run data subject rights assessment (Right to be Forgotten, Access, Rectification).
+
+        This is a post-scan assessment that tests the application's compliance
+        with Pasal 22 UU PDP by probing deletion, access, and rectification endpoints.
+        """
+        engine = DataRightsValidationEngine(scope_guard=recon.scope_guard)
+        auth_headers = runtime_options.get("primary_headers") or {}
+
+        try:
+            assessment = await engine.assess_all_rights(
+                target=target.base_url,
+                auth_headers=auth_headers if auth_headers else None,
+            )
+        except Exception:
+            return  # Non-blocking — data rights tests may fail on non-PDP apps
+
+        rtbf = assessment.get("right_to_be_forgotten")
+        access = assessment.get("right_to_access")
+        rect = assessment.get("right_to_rectification")
+
+        tests_to_report: list[tuple[str, str, object]] = []
+        if rtbf:
+            tests_to_report.append(
+                ("right_to_be_forgotten", "Right to be Forgotten", rtbf)
+            )
+        if access:
+            tests_to_report.append(("right_to_access", "Right to Access", access))
+        if rect:
+            tests_to_report.append(
+                ("right_to_rectification", "Right to Rectification", rect)
+            )
+
+        for right_type, right_name, result_obj in tests_to_report:
+            status = getattr(result_obj, "status", "not_testable")
+            score = float(getattr(result_obj, "score", 0))
+            findings_list = getattr(result_obj, "findings", [])
+            deletion_verified = getattr(result_obj, "deletion_verified", False)
+
+            if status == "not_testable":
+                continue
+
+            if status == "compliant" and score >= 80:
+                severity = "info"
+            elif status == "partial" or score < 50:
+                severity = "medium"
+            else:
+                severity = "low"
+
+            descriptions: list[str] = []
+            for f in findings_list:
+                if isinstance(f, dict):
+                    detail = f.get("details", "")
+                    if detail:
+                        descriptions.append(detail)
+                elif hasattr(f, "details"):
+                    descriptions.append(str(f.details))
+
+            title_suffix = {
+                "compliant": "Compliant",
+                "partial": "Partially Compliant",
+                "non_compliant": "Non-Compliant",
+                "not_testable": "Not Testable",
+            }.get(status, status)
+
+            from app.models import Finding as FindingModel
+
+            # Build evidence dict
+            evidence_dict = {
+                "right_type": right_type,
+                "status": status,
+                "score": score,
+                "tests_run": getattr(result_obj, "tests_run", 0),
+                "tests_passed": getattr(result_obj, "tests_passed", 0),
+                "tests_failed": getattr(result_obj, "tests_failed", 0),
+                "deletion_verified": deletion_verified,
+                "response_time_ms": getattr(result_obj, "response_time_ms", None),
+                "test_details": descriptions,
+                "validation_mode": "data_rights_assessment",
+            }
+
+            description = (
+                f"Assessment of {right_name} per Pasal 22 UU PDP. "
+                f"Status: {status}, Score: {score:.0f}/100. "
+                f"Tests run: {getattr(result_obj, 'tests_run', 0)}, "
+                f"Passed: {getattr(result_obj, 'tests_passed', 0)}, "
+                f"Failed: {getattr(result_obj, 'tests_failed', 0)}."
+            )
+
+            remediation = (
+                "Ensure the application provides a mechanism for data subjects "
+                f"to exercise their {right_name.lower()} rights per Pasal 22 UU PDP. "
+                "Refer to the test details for specific gaps."
+            )
+
+            reasoning = [
+                f"{right_name} assessment: {title_suffix}",
+                f"Score: {score:.0f}/100",
+            ] + descriptions[:3]
+
+            # Build compliance impacts for Pasal 22
+            compliance_impacts = [
+                {
+                    "framework": "UU PDP",
+                    "article_or_control": "Pasal 22",
+                    "privacy_risk": f"Data subject {right_name.lower()} may not be properly supported.",
+                    "legal_risk": "Potential non-compliance with Pasal 22 UU PDP (hak data subjek).",
+                    "business_risk": "Regulatory inquiry and data subject complaints.",
+                },
+                {
+                    "framework": "OWASP ASVS",
+                    "article_or_control": "V4.2 Data Subject Rights",
+                    "privacy_risk": "Application may not support data subject rights mechanisms.",
+                    "legal_risk": "ASVS compliance gap for data subject rights controls.",
+                    "business_risk": "May affect audit posture for data governance.",
+                },
+            ]
+
+            finding_model = FindingModel(
+                organization_id=scan.organization_id,
+                project_id=scan.project_id,
+                target_id=scan.target_id,
+                scan_id=scan.id,
+                endpoint_id=None,
+                finding_type=f"data_rights_{right_type}",
+                title=f"{right_name}: {title_suffix} (score {score:.0f}/100)",
+                severity=severity,
+                status="Open",
+                confidence=80.0,
+                risk_score=round(score * 0.8, 1),
+                description=description,
+                reasoning=reasoning,
+                evidence_summary=evidence_dict,
+                compliance=compliance_impacts,
+                remediation_guidance=remediation,
+            )
+            self.session.add(finding_model)
+            await self.session.flush()
+
+            # Map to compliance
+            compliance_engine = ComplianceMappingEngine()
+            impacts = compliance_engine.map_finding(finding_model.finding_type, [])
+            for impact in impacts:
+                cm = ComplianceMapping(
+                    organization_id=scan.organization_id,
+                    finding_id=finding_model.id,
+                    framework=impact.framework,
+                    article_or_control=impact.article_or_control,
+                    privacy_risk=impact.privacy_risk,
+                    legal_risk=impact.legal_risk,
+                    business_risk=impact.business_risk,
+                )
+                self.session.add(cm)
+
+            await self.session.flush()
+
     async def _generate_default_reports(self, scan: Scan) -> None:
         result = await self.session.execute(
-            select(Finding).where(Finding.scan_id == scan.id, Finding.organization_id == scan.organization_id)
+            select(Finding).where(
+                Finding.scan_id == scan.id,
+                Finding.organization_id == scan.organization_id,
+            )
         )
         findings = list(result.scalars().all())
         if not findings:
             return
         endpoint_result = await self.session.execute(
             select(Endpoint)
-            .where(Endpoint.scan_id == scan.id, Endpoint.organization_id == scan.organization_id)
+            .where(
+                Endpoint.scan_id == scan.id,
+                Endpoint.organization_id == scan.organization_id,
+            )
             .order_by(Endpoint.risk_score.desc(), Endpoint.created_at.asc())
         )
         context = {
@@ -955,7 +1219,9 @@ class ScanRunner:
         )
         await self.session.flush()
 
-    async def _scan_stats(self, scan: Scan, phase: str, progress: int) -> dict[str, Any]:
+    async def _scan_stats(
+        self, scan: Scan, phase: str, progress: int
+    ) -> dict[str, Any]:
         endpoint_count = await self.session.scalar(
             select(func.count(Endpoint.id)).where(Endpoint.scan_id == scan.id)
         )
@@ -969,9 +1235,11 @@ class ScanRunner:
             select(func.max(Finding.risk_score)).where(Finding.scan_id == scan.id)
         )
         compliance_count = await self.session.scalar(
-            select(func.count(ComplianceMapping.id)).where(ComplianceMapping.finding_id.in_(
-                select(Finding.id).where(Finding.scan_id == scan.id)
-            ))
+            select(func.count(ComplianceMapping.id)).where(
+                ComplianceMapping.finding_id.in_(
+                    select(Finding.id).where(Finding.scan_id == scan.id)
+                )
+            )
         )
         previous = scan.stats or {}
         return {
@@ -989,7 +1257,9 @@ class ScanRunner:
             "coverage_status": "complete",
         }
 
-    def _progress(self, *, phase: str, progress: int, message: str, **extra: Any) -> dict[str, Any]:
+    def _progress(
+        self, *, phase: str, progress: int, message: str, **extra: Any
+    ) -> dict[str, Any]:
         return {
             "phase": phase,
             "progress_percentage": max(0, min(100, progress)),
@@ -1069,7 +1339,11 @@ class ScanRunner:
             subscriptions = list(result.scalars().all())
 
             scan_stats = scan.stats or {}
-            target = await self.session.get(Target, scan.target_id) if scan.target_id else None
+            target = (
+                await self.session.get(Target, scan.target_id)
+                if scan.target_id
+                else None
+            )
             payload = {
                 "event": event,
                 "scan_id": scan.id,
@@ -1080,7 +1354,9 @@ class ScanRunner:
                 "error": scan.error,
                 "findings_count": scan_stats.get("findings", 0),
                 "endpoints_count": scan_stats.get("endpoints", 0),
-                "finished_at": scan.finished_at.isoformat() if scan.finished_at else None,
+                "finished_at": scan.finished_at.isoformat()
+                if scan.finished_at
+                else None,
             }
 
             for sub in subscriptions:
