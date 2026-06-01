@@ -415,3 +415,29 @@ class AuditLog(Base):
     )
     previous_hash: Mapped[str | None] = mapped_column(String(64))
     entry_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+
+
+class WebhookSubscription(Base, TimestampMixin):
+    """External webhook endpoints notified on scan lifecycle events."""
+    __tablename__ = "webhook_subscriptions"
+    __table_args__ = (
+        Index("ix_webhook_org_active", "organization_id", "is_active"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    secret: Mapped[str | None] = mapped_column(String(512))  # HMAC signing key
+    events: Mapped[list[str]] = mapped_column(
+        JSON, default=lambda: ["scan.completed", "scan.failed"], nullable=False
+    )
+    headers: Mapped[dict[str, str]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_delivery_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_delivery_status: Mapped[int | None] = mapped_column(Integer)

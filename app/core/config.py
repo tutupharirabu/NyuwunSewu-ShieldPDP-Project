@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     environment: Literal["local", "test", "staging", "production"] = "local"
     debug: bool = False
     secret_key: str = Field("change-me-in-production", min_length=16)
+    agent_secret: str | None = Field(None, description="Shared secret for external agent finding ingestion")
     access_token_ttl_minutes: int = 480
 
     database_url: str = (

@@ -390,6 +390,7 @@ class ScanRunner:
             scan.finished_at = utcnow()
             scan.stats = await self._scan_stats(scan, phase="Completed", progress=100)
             await self.session.commit()
+            await self._dispatch_webhooks(scan, "scan.completed")
         except Exception as exc:
             scan.status = ScanStatus.FAILED.value
             scan.error = f"{type(exc).__name__}: {exc}"
@@ -402,6 +403,7 @@ class ScanRunner:
                 "coverage_status": "failed",
             }
             await self.session.commit()
+            await self._dispatch_webhooks(scan, "scan.failed")
             raise
 
     def _policy_config(self, model: Policy) -> ScanPolicyConfig:
@@ -1048,3 +1050,52 @@ class ScanRunner:
             "reports": 0,
         }
         await self.session.commit()
+        await self._dispatch_webhooks(scan, "scan.failed")
+
+    async def _dispatch_webhooks(self, scan: Scan, event: str) -> None:
+        """Fire matching webhook subscriptions for a scan lifecycle event."""
+        try:
+            from sqlalchemy import select as sel
+
+            from app.models import WebhookSubscription
+            from app.services.webhook_service import dispatch_webhook
+
+            result = await self.session.execute(
+                sel(WebhookSubscription).where(
+                    WebhookSubscription.organization_id == scan.organization_id,
+                    WebhookSubscription.is_active.is_(True),
+                )
+            )
+            subscriptions = list(result.scalars().all())
+
+            scan_stats = scan.stats or {}
+            target = await self.session.get(Target, scan.target_id) if scan.target_id else None
+            payload = {
+                "event": event,
+                "scan_id": scan.id,
+                "target_url": target.base_url if target else None,
+                "project_id": scan.project_id,
+                "status": scan.status,
+                "stats": scan_stats,
+                "error": scan.error,
+                "findings_count": scan_stats.get("findings", 0),
+                "endpoints_count": scan_stats.get("endpoints", 0),
+                "finished_at": scan.finished_at.isoformat() if scan.finished_at else None,
+            }
+
+            for sub in subscriptions:
+                if event not in (sub.events or []):
+                    continue
+                status_code = await dispatch_webhook(
+                    url=sub.url,
+                    event=event,
+                    data=payload,
+                    secret=sub.secret,
+                    extra_headers=sub.headers or None,
+                )
+                sub.last_delivery_at = utcnow()
+                sub.last_delivery_status = status_code
+            await self.session.commit()
+        except Exception as exc:
+            scan.stats = scan.stats or {}
+            scan.stats.setdefault("_webhook_errors", []).append(f"{event}: {exc}")

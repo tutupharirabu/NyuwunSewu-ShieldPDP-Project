@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api import auth, compliance, dashboard, enterprise, findings, remediation, reports, scans
+from app.api import auth, compliance, dashboard, enterprise, findings, remediation, reports, scans, webhooks
 
 api_router = APIRouter()
 api_router.include_router(auth.router)
@@ -11,3 +11,4 @@ api_router.include_router(remediation.router)
 api_router.include_router(compliance.router)
 api_router.include_router(dashboard.router)
 api_router.include_router(enterprise.router)
+api_router.include_router(webhooks.router)
