@@ -418,6 +418,38 @@ class AuditLog(Base):
 
 
 
+class AgentSession(Base, TimestampMixin):
+    """Tracks agent exploration sessions with real-time logs and approval workflow."""
+    __tablename__ = "agent_sessions"
+    __table_args__ = (
+        Index("ix_agent_session_org_status", "organization_id", "status"),
+        Index("ix_agent_session_scan", "scan_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    organization_id: Mapped[str | None] = mapped_column(
+        ForeignKey("organizations.id"), nullable=True, index=True
+    )
+    scan_id: Mapped[str | None] = mapped_column(
+        ForeignKey("scans.id"), nullable=True, index=True
+    )
+    agent_name: Mapped[str] = mapped_column(String(120), nullable=False, default="phantom")
+    target_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), default="idle", nullable=False
+    )  # idle, exploring, pending_approval, approved, denied, completed, failed
+    current_action: Mapped[str | None] = mapped_column(String(512))
+    logs: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    pending_action: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    findings_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class WebhookSubscription(Base, TimestampMixin):
     """External webhook endpoints notified on scan lifecycle events."""
     __tablename__ = "webhook_subscriptions"

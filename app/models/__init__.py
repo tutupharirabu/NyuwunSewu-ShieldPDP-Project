@@ -1,4 +1,5 @@
 from app.models.entities import (
+    AgentSession,
     AuditLog,
     ComplianceMapping,
     Endpoint,
@@ -20,6 +21,7 @@ from app.models.entities import (
 )
 
 __all__ = [
+    "AgentSession",
     "AuditLog",
     "ComplianceMapping",
     "Endpoint",

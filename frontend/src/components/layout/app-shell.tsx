@@ -1,6 +1,7 @@
 import {
   Activity,
   BarChart3,
+  Bot,
   ClipboardCheck,
   FileText,
   FolderKanban,
@@ -28,6 +29,7 @@ const navigation = [
   { name: "Projects & Activity", href: "/projects", icon: FolderKanban },
   { name: "Targets", href: "/targets", icon: Target },
   { name: "Findings", href: "/findings", icon: SearchCheck },
+  { name: "Agent Sessions", href: "/agent-sessions", icon: Bot },
   { name: "Compliance", href: "/compliance", icon: ClipboardCheck },
   { name: "Reports", href: "/reports", icon: FileText },
   { name: "Remediation", href: "/remediation", icon: Activity },
@@ -39,6 +41,7 @@ const pageNames: Record<string, string> = {
   "/projects": "Projects & Activity",
   "/targets": "Targets",
   "/findings": "Findings",
+  "/agent-sessions": "Agent Sessions",
   "/compliance": "Compliance Intelligence",
   "/reports": "Reports",
   "/remediation": "Remediation",
