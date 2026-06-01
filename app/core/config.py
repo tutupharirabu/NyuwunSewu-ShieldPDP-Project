@@ -33,6 +33,10 @@ class Settings(BaseSettings):
 
     cors_origins: list[str | AnyHttpUrl] = ["http://localhost:8000"]
 
+    # Telegram integration for agent notifications
+    telegram_bot_token: str | None = Field(None, description="Telegram bot token for agent notifications")
+    telegram_chat_id: str | None = Field(None, description="Telegram chat ID for agent notifications")
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 
 import { AppShell } from "@/components/layout/app-shell";
 import { ProtectedRoute } from "@/components/layout/protected-route";
+import { AgentSessionsPage } from "@/pages/agent-sessions";
 import { CompliancePage } from "@/pages/compliance";
 import { DashboardPage } from "@/pages/dashboard";
 import { FindingsPage } from "@/pages/findings";
@@ -28,6 +29,7 @@ export default function App() {
           <Route path="/compliance" element={<CompliancePage />} />
           <Route path="/reports" element={<ReportsPage />} />
           <Route path="/remediation" element={<RemediationPage />} />
+          <Route path="/agent-sessions" element={<AgentSessionsPage />} />
           <Route path="/audit-logs" element={<Navigate to="/projects" replace />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/scan" element={<ScanPage />} />
