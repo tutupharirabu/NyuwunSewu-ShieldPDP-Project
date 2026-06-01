@@ -12,6 +12,7 @@ class Permission(str, Enum):
     READ_DASHBOARD = "dashboard:read"
     READ_FINDINGS = "findings:read"
     READ_COMPLIANCE = "compliance:read"
+    MANAGE_COMPLIANCE = "compliance:manage"
     ADMIN = "admin:*"
 
 
@@ -36,6 +37,7 @@ ROLE_PERMISSIONS: dict[RoleName, set[Permission]] = {
         Permission.READ_DASHBOARD,
         Permission.READ_FINDINGS,
         Permission.READ_COMPLIANCE,
+        Permission.MANAGE_COMPLIANCE,
     },
     RoleName.PENTESTER: {
         Permission.SCAN_CREATE,
@@ -45,6 +47,7 @@ ROLE_PERMISSIONS: dict[RoleName, set[Permission]] = {
         Permission.READ_DASHBOARD,
         Permission.READ_FINDINGS,
         Permission.READ_COMPLIANCE,
+        Permission.MANAGE_COMPLIANCE,
     },
     RoleName.AUDITOR: {
         Permission.EVIDENCE_ACCESS,
@@ -72,4 +75,3 @@ def role_has_permission(role_name: str, permission: Permission) -> bool:
 
 def default_permissions_for(role_name: RoleName) -> list[str]:
     return sorted(permission.value for permission in ROLE_PERMISSIONS[role_name])
-

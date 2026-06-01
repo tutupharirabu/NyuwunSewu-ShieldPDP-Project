@@ -1,6 +1,7 @@
 from app.models.entities import (
     AgentSession,
     AuditLog,
+    BreachNotification,
     ComplianceMapping,
     Endpoint,
     Evidence,
@@ -23,6 +24,7 @@ from app.models.entities import (
 __all__ = [
     "AgentSession",
     "AuditLog",
+    "BreachNotification",
     "ComplianceMapping",
     "Endpoint",
     "Evidence",
@@ -41,4 +43,3 @@ __all__ = [
     "User",
     "WebhookSubscription",
 ]
-

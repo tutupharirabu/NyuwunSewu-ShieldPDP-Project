@@ -79,6 +79,31 @@ export interface ComplianceRow {
   finding_count: number;
 }
 
+export interface RemediationMatrixItem {
+  priority_rank: number;
+  priority_level: string;
+  domain: string;
+  action: string;
+  finding_count: number;
+  severity_breakdown: Record<string, number>;
+  max_risk_score: number;
+  total_effort_score: number;
+  effort_estimate: string;
+  effort_days: string;
+  recommended_timeline: string;
+  affected_endpoints: string[];
+  finding_titles: string[];
+  finding_types: string[];
+  compliance_impact: string[];
+}
+
+export interface RemediationMatrixResponse {
+  organization_id: string;
+  matrix: RemediationMatrixItem[];
+  total_findings: number;
+  total_items: number;
+}
+
 export interface ComplianceResponse {
   organization_id: string;
   mappings: ComplianceRow[];
