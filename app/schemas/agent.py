@@ -15,6 +15,8 @@ class AgentSessionCreate(BaseModel):
     agent_name: str = "phantom"
 
 
+from datetime import datetime
+
 class AgentSessionResponse(BaseModel):
     id: str
     agent_name: str
@@ -25,9 +27,9 @@ class AgentSessionResponse(BaseModel):
     pending_action: dict | None = None
     findings_count: int
     scan_id: str | None = None
-    started_at: str | None = None
-    completed_at: str | None = None
-    created_at: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime | None = None
 
 
 class AgentLogSubmit(BaseModel):
