@@ -1,5 +1,3 @@
-import asyncio
-
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,7 +53,6 @@ async def login(
 
     result = await session.execute(stmt)
     user = result.scalar_one_or_none()
-<<<<<<< HEAD
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
@@ -68,12 +65,6 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         )
-=======
-    if user is None or not await asyncio.get_running_loop().run_in_executor(
-        None, verify_password, payload.password, user.hashed_password
-    ):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
->>>>>>> d4f67487ec9dad4b44f0cf8988afa4a21e960e76
 
     user.last_login_at = utcnow()
     await AuditService(session).log(
