@@ -14,6 +14,8 @@ export default defineConfig(function (_a) {
     },
     server: {
       port: 5173,
+      host: "0.0.0.0",
+      allowedHosts: ["vps-ece41005.tail25f2a6.ts.net"],
       proxy: {
         "/api": {
           target: backend,
