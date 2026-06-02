@@ -2,14 +2,25 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import current_ip, get_current_user, require_permission
 from app.core.config import get_settings
 from app.core.rbac import Permission
-from app.core.security import create_access_token, hash_password, utcnow, verify_password
+from app.core.security import (
+    create_access_token,
+    hash_password,
+    utcnow,
+    verify_password,
+)
 from app.database.session import get_session
 from app.models import Organization, Role, User
-from app.schemas.auth import LoginRequest, TokenResponse, UserCreateRequest, UserResponse
+from app.schemas.auth import (
+    LoginRequest,
+    TokenResponse,
+    UserCreateRequest,
+    UserResponse,
+)
 from app.services.audit_service import AuditService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -21,9 +32,13 @@ async def login(
     session: AsyncSession = Depends(get_session),
 ) -> TokenResponse:
     payload = await _login_payload(request)
-    stmt = select(User).options(selectinload(User.role), selectinload(User.organization)).where(
-        User.email == payload.email,
-        User.is_active.is_(True),
+    stmt = (
+        select(User)
+        .options(selectinload(User.role), selectinload(User.organization))
+        .where(
+            User.email == payload.email,
+            User.is_active.is_(True),
+        )
     )
     if payload.organization_slug:
         org_result = await session.execute(
@@ -31,13 +46,25 @@ async def login(
         )
         org = org_result.scalar_one_or_none()
         if org is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
+            )
         stmt = stmt.where(User.organization_id == org.id)
 
     result = await session.execute(stmt)
     user = result.scalar_one_or_none()
-    if user is None or not verify_password(payload.password, user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
+        )
+    # PBKDF2 is CPU-intensive — run in threadpool to avoid blocking the event loop
+    password_valid = await run_in_threadpool(
+        verify_password, payload.password, user.hashed_password
+    )
+    if not password_valid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
+        )
 
     user.last_login_at = utcnow()
     await AuditService(session).log(
@@ -51,7 +78,9 @@ async def login(
 
     settings = get_settings()
     token = create_access_token(user.id, user.organization_id, user.role.name)
-    return TokenResponse(access_token=token, expires_in_minutes=settings.access_token_ttl_minutes)
+    return TokenResponse(
+        access_token=token, expires_in_minutes=settings.access_token_ttl_minutes
+    )
 
 
 async def _login_payload(request: Request) -> LoginRequest:
@@ -142,13 +171,17 @@ async def create_user(
         )
     ).scalar_one_or_none()
     if existing is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="User already exists"
+        )
 
     role = (
         await session.execute(select(Role).where(Role.name == payload.role))
     ).scalar_one_or_none()
     if role is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown role")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown role"
+        )
 
     created = User(
         organization_id=user.organization_id,
