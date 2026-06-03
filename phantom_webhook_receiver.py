@@ -25,6 +25,8 @@ import subprocess
 import threading
 import time
 import traceback
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -35,7 +37,9 @@ WEBHOOK_SECRET = os.getenv("PHANTOM_WEBHOOK_SECRET", "")
 NYUWUNSEWU_URL = os.getenv("NYUWUNSEWU_URL", "http://127.0.0.1:8000").rstrip("/")
 AGENT_SECRET = os.getenv("PHANTOM_AGENT_SECRET", "")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@nyuwunsewu.local")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD") or os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD") or os.getenv(
+    "BOOTSTRAP_ADMIN_PASSWORD", ""
+)
 ENVIRONMENT = os.getenv("ENVIRONMENT", "local").lower()
 
 PROFILE = os.getenv("HERMES_PROFILE", "phantom")
@@ -57,7 +61,9 @@ def _normalize_hermes_home(raw: str) -> str:
 
 
 # Hermes root home (normalized) + derived profile paths
-HERMES_HOME = _normalize_hermes_home(os.getenv("HERMES_HOME", os.path.expanduser("~/.hermes")))
+HERMES_HOME = _normalize_hermes_home(
+    os.getenv("HERMES_HOME", os.path.expanduser("~/.hermes"))
+)
 PROFILE_DIR = os.path.join(HERMES_HOME, "profiles", PROFILE)
 PENDING_SCANS_DIR = os.path.join(PROFILE_DIR, "pending_scans")
 CRON_DIR = os.path.join(PROFILE_DIR, "cron")
@@ -65,9 +71,12 @@ CRON_DIR = os.path.join(PROFILE_DIR, "cron")
 # Ensure pending scans directory exists
 os.makedirs(PENDING_SCANS_DIR, exist_ok=True)
 
-LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phantom_receiver.log")
+LOG_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "phantom_receiver.log"
+)
 
 # --- Logging ---
+
 
 def log(msg: str):
     """Thread-safe logging to stdout and file."""
@@ -80,9 +89,11 @@ def log(msg: str):
     except Exception:
         pass
 
+
 # --- Fail-fast: reject weak/default secrets ---
 
 _DEFAULT_SECRETS = {"webhook-signing-secret", "phantom-agent-secret-2026"}
+
 
 def _validate_secrets() -> None:
     """Abort if any secret is missing or still using default value."""
@@ -108,9 +119,11 @@ def _validate_secrets() -> None:
         for e in errors:
             print(f"[WARN] {e}")
 
+
 _validate_secrets()
 
 # --- Bridge to Hermes ---
+
 
 def _hermes_cli(*args: str, timeout: int = 120) -> subprocess.CompletedProcess:
     """Run a Hermes CLI command (always scoped to PROFILE) and return the result.
@@ -144,13 +157,87 @@ def _save_scan_context(scan_id: str, payload: dict) -> str:
     return filepath
 
 
-def _create_exploration_job(scan_id: str, target_url: str, context_path: str) -> str | None:
+def _create_agent_session(scan_id: str, target_url: str) -> str | None:
+    """Create an AgentSession record via the backend API (agent-auth endpoint).
+
+    Returns the session_id on success, None on failure.
+    This bridges the receiver pipeline to the frontend AgentSessionsPage.
+    """
+    url = f"{NYUWUNSEWU_URL}/agent-sessions/ingest"
+    body = json.dumps(
+        {
+            "scan_id": scan_id,
+            "target_url": target_url,
+            "agent_name": "phantom",
+            "status": "idle",
+            "message": f"Scan {scan_id} completed. Agent exploration pending.",
+            "level": "info",
+        }
+    ).encode()
+
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Agent-Secret": AGENT_SECRET,
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            session_id = data.get("session_id")
+            log(f"   [OK] AgentSession created: {session_id}")
+            return session_id
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode()[:200]
+        log(f"   [WARN] Failed to create AgentSession: HTTP {e.code} - {err_body}")
+        return None
+    except Exception as e:
+        log(f"   [WARN] Failed to create AgentSession: {type(e).__name__}: {e}")
+        return None
+
+
+def _create_exploration_job(
+    scan_id: str, target_url: str, context_path: str, session_id: str | None = None
+) -> str | None:
     """Create a one-shot Hermes cron job that runs the agent exploration.
 
     Relies on the Hermes scheduler ticking (root-cause lock bug is mitigated by
     the watchdog below + a clean gateway start). Returns a job ID string on
     success, None on failure.
     """
+    session_block = ""
+    if session_id:
+        session_block = f"""== SESSION TRACKING (update backend as you work) ==
+Your AgentSession ID: {session_id}
+Update your session state via the backend API so the operator can track progress.
+Use these endpoints (auth: X-Agent-Secret header = {AGENT_SECRET}):
+
+- Update status to "exploring" when you start:
+  curl -X POST {NYUWUNSEWU_URL}/agent-sessions/ingest \\
+    -H "Content-Type: application/json" -H "X-Agent-Secret: {AGENT_SECRET}" \\
+    -d '{{"scan_id": "{scan_id}", "target_url": "{target_url}", "agent_name": "phantom", "status": "exploring", "current_action": "Starting exploration", "message": "Agent started, beginning validation", "level": "info"}}'
+
+- Push log entries for key milestones:
+  curl -X POST {NYUWUNSEWU_URL}/agent-sessions/{session_id}/ingest-log \\
+    -H "Content-Type: application/json" -H "X-Agent-Secret: {AGENT_SECRET}" \\
+    -d '{{"level": "info", "message": "Completed IDOR check on /api/accounts", "action": "idor_check"}}'
+  Levels: info, warning, error, success.
+
+- Increment findings_count when you submit a finding (call the ingest endpoint
+  with status="exploring", current_action describing what you just tested).
+
+- When ALL done, mark session complete:
+  curl -X POST {NYUWUNSEWU_URL}/agent-sessions/{session_id}/ingest-complete \\
+    -H "X-Agent-Secret: {AGENT_SECRET}" \\
+    -d 'findings_count=<number_of_findings_submitted>'
+
+Do this at key milestones: start (status=exploring), each finding confirmed,
+and at the very end (status=completed)."""
+
     prompt = f"""PHANTOM ENGAGEMENT - Authorized Web App Pentest (Learning Lab)
 
 == AUTHORIZATION (Phase 0 ALREADY SATISFIED - do NOT halt to ask) ==
@@ -201,6 +288,8 @@ You have a LIMITED turn budget. Do NOT spend it all on reconnaissance.
 5. INFO DISCLOSURE / MISCONFIG: nuclei + nikto for verbose errors, exposed
    debug/config endpoints, PII/tokens in responses, missing security headers.
 
+{session_block}
+
 == SUBMISSION (per confirmed finding) ==
 curl POST {NYUWUNSEWU_URL}/findings/ingest
 Headers: Content-Type: application/json, X-Agent-Secret: {AGENT_SECRET}
@@ -231,20 +320,29 @@ brute-force floods. Stay strictly within {target_url}. Submit findings as you go
 End with a concise summary of all findings submitted."""
 
     result = _hermes_cli(
-        "cron", "create",
+        "cron",
+        "create",
         "1m",
         prompt,
-        "--repeat", "1",
-        "--name", f"explore-{scan_id[:8]}",
-        "--deliver", "origin",
+        "--repeat",
+        "1",
+        "--name",
+        f"explore-{scan_id[:8]}",
+        "--deliver",
+        "origin",
         timeout=60,
     )
 
     if result.returncode == 0:
         import re
+
         stdout = result.stdout.strip()
-        job_match = re.search(r'([0-9a-f]{12})', stdout)
-        job_id = job_match.group(1) if job_match else (stdout[-12:] if len(stdout) >= 12 else "unknown")
+        job_match = re.search(r"([0-9a-f]{12})", stdout)
+        job_id = (
+            job_match.group(1)
+            if job_match
+            else (stdout[-12:] if len(stdout) >= 12 else "unknown")
+        )
         log(f"   [OK] Exploration job created: {job_id}")
         log(f"   [INFO] Scheduler will tick this within ~1 minute")
         return job_id
@@ -257,7 +355,11 @@ End with a concise summary of all findings submitted."""
 
 def _notify_user(scan_id: str, target_url: str, job_id: str | None):
     """Notify user via Hermes send that exploration is starting (best-effort)."""
-    status_text = f"Job: {job_id}" if job_id else "[WARN] Could not schedule exploration - manual intervention needed"
+    status_text = (
+        f"Job: {job_id}"
+        if job_id
+        else "[WARN] Could not schedule exploration - manual intervention needed"
+    )
     message = f"""[SCAN] Scan Completed - Starting Agent Exploration
 
 Scan ID: {scan_id}
@@ -269,7 +371,12 @@ The Phantom agent will now explore the target and submit findings automatically.
     def _do_notify():
         try:
             result = _hermes_cli(
-                "send", "--to", "telegram", "-s", "[SCAN] Pentest Agent Report", message,
+                "send",
+                "--to",
+                "telegram",
+                "-s",
+                "[SCAN] Pentest Agent Report",
+                message,
                 timeout=10,
             )
             if result.returncode == 0:
@@ -286,6 +393,7 @@ The Phantom agent will now explore the target and submit findings automatically.
 
 
 # --- Webhook Handler ---
+
 
 class WebhookHandler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -383,16 +491,19 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
 
 def _trigger_exploration(scan_id: str, target_url: str, payload: dict):
-    """Full pipeline: save context -> create job -> notify."""
+    """Full pipeline: create session -> save context -> create job -> notify."""
     try:
-        log(f"\n{'='*60}")
+        log(f"\n{'=' * 60}")
         log(f"[AGENT] TRIGGERING PHANTOM AGENT EXPLORATION")
         log(f"   Scan ID: {scan_id}")
         log(f"   Target:  {target_url}")
-        log(f"{'='*60}")
+        log(f"{'=' * 60}")
+
+        # Create AgentSession record (bridges to frontend)
+        session_id = _create_agent_session(scan_id, target_url)
 
         context_path = _save_scan_context(scan_id, payload)
-        job_id = _create_exploration_job(scan_id, target_url, context_path)
+        job_id = _create_exploration_job(scan_id, target_url, context_path, session_id)
         _notify_user(scan_id, target_url, job_id)
 
         log(f"\n[OK] Exploration pipeline complete!")
@@ -407,17 +518,24 @@ def _notify_scan_failure(scan_id: str, payload: dict):
     message = f"""[ERR] Scan Failed
 
 Scan ID: {scan_id}
-Target: {payload.get('target_url', 'N/A')}
+Target: {payload.get("target_url", "N/A")}
 Error: {error_msg}"""
 
     def _do_notify():
         try:
             _hermes_cli(
-                "send", "--to", "telegram", "-s", "[ERR] Pentest Agent Report", message,
+                "send",
+                "--to",
+                "telegram",
+                "-s",
+                "[ERR] Pentest Agent Report",
+                message,
                 timeout=10,
             )
         except Exception as e:
-            log(f"   [WARN] Failure notification error (non-fatal): {type(e).__name__}: {e}")
+            log(
+                f"   [WARN] Failure notification error (non-fatal): {type(e).__name__}: {e}"
+            )
 
     t = threading.Thread(target=_do_notify, daemon=True)
     t.start()
@@ -430,6 +548,7 @@ Error: {error_msg}"""
 # the scheduler stays alive even if the receiver is the only thing supervising it.
 
 _LOCK_FILE = os.path.join(CRON_DIR, ".tick.lock")
+
 
 def _cron_lock_watchdog():
     """Remove stale .tick.lock and orphaned .jobs_*.tmp files periodically."""
@@ -452,16 +571,20 @@ def _cron_lock_watchdog():
                     age = now - os.path.getmtime(fp)
                     if age > 120:  # 2 min old = clearly orphaned
                         os.remove(fp)
-                        log(f"   [WATCHDOG] Removed orphan temp: {name} (age={age:.0f}s)")
+                        log(
+                            f"   [WATCHDOG] Removed orphan temp: {name} (age={age:.0f}s)"
+                        )
         except Exception:
             pass
         time.sleep(30)
+
 
 # _watchdog_thread = threading.Thread(target=_cron_lock_watchdog, daemon=True)
 # _watchdog_thread.start()
 # log("[WATCHDOG] Cron lock file watchdog started")
 
 # --- Main ---
+
 
 def main():
     print("[START] Phantom Agent Webhook Receiver (Production)")

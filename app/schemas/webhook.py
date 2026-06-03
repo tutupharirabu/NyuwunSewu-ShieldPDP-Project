@@ -1,4 +1,6 @@
-from pydantic import BaseModel, Field
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class WebhookCreate(BaseModel):
@@ -22,19 +24,24 @@ class WebhookUpdate(BaseModel):
 
 
 class WebhookResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     name: str
     url: str
     events: list[str]
     is_active: bool
-    last_delivery_at: str | None = None
+    last_delivery_at: datetime | None = None
     last_delivery_status: int | None = None
 
 
 class AgentFindingIngest(BaseModel):
     """Finding submitted by an external agent (e.g. Phantom)."""
+
     scan_id: str | None = Field(None, description="Link to existing scan, optional")
-    target_url: str | None = Field(None, description="Target URL if scan_id not provided")
+    target_url: str | None = Field(
+        None, description="Target URL if scan_id not provided"
+    )
     finding_type: str = Field(..., max_length=120)
     title: str = Field(..., min_length=1, max_length=255)
     severity: str = Field("medium", pattern="^(info|low|medium|high|critical)$")
@@ -50,8 +57,12 @@ class AgentFindingIngest(BaseModel):
     response_headers: dict | None = Field(None)
     response_body: str | None = Field(None)
     remediation: str | None = Field(None)
-    agent_name: str | None = Field(None, description="Name of the agent that found this")
-    exploit_chain: list[str] = Field(default_factory=list, description="Steps taken to exploit")
+    agent_name: str | None = Field(
+        None, description="Name of the agent that found this"
+    )
+    exploit_chain: list[str] = Field(
+        default_factory=list, description="Steps taken to exploit"
+    )
 
 
 class AgentFindingResponse(BaseModel):
