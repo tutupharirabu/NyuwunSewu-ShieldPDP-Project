@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Any, Literal
 
-from pydantic import AnyHttpUrl, Field, field_validator
+from pydantic import AliasChoices, AnyHttpUrl, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,7 +10,14 @@ class Settings(BaseSettings):
     environment: Literal["local", "test", "staging", "production"] = "local"
     debug: bool = False
     secret_key: str = Field("change-me-in-production", min_length=16)
-    agent_secret: str | None = Field(None, description="Shared secret for external agent finding ingestion")
+    agent_secret: str | None = Field(
+        None,
+        # Accept either AGENT_SECRET (docker-compose remap) or the
+        # PHANTOM_AGENT_SECRET used directly in .env, so the shared secret
+        # resolves the same whether the backend runs bare or in Docker.
+        validation_alias=AliasChoices("AGENT_SECRET", "PHANTOM_AGENT_SECRET"),
+        description="Shared secret for external agent finding ingestion",
+    )
     access_token_ttl_minutes: int = 480
 
     database_url: str = (
