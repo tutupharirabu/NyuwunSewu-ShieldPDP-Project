@@ -1,12 +1,32 @@
-import { Fingerprint, FolderKanban, History, Radar, Target, TriangleAlert } from "lucide-react";
+import {
+  Fingerprint,
+  FolderKanban,
+  History,
+  Radar,
+  Target,
+  TriangleAlert,
+} from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api";
 import { compactId, formatDate, formatNumber } from "@/lib/utils";
@@ -16,13 +36,19 @@ export function ProjectsPage() {
   const { data, loading, error } = useApi(async () => {
     const [projects, auditLogs] = await Promise.all([
       api.projects(),
-      api.auditLogs().catch(() => [])
+      api.auditLogs().catch(() => []),
     ]);
     return { projects, auditLogs };
   }, []);
 
   if (loading) return <Skeleton className="h-[520px]" />;
-  if (error || !data) return <EmptyState title="Projects unavailable" description={error ?? "Unable to load projects."} />;
+  if (error || !data)
+    return (
+      <EmptyState
+        title="Projects unavailable"
+        description={error ?? "Unable to load projects."}
+      />
+    );
 
   return (
     <div className="space-y-6">
@@ -31,7 +57,9 @@ export function ProjectsPage() {
           <CardContent className="flex items-center gap-3 p-5">
             <FolderKanban className="h-5 w-5 text-primary" />
             <div>
-              <p className="text-2xl font-semibold">{formatNumber(data.projects.length)}</p>
+              <p className="text-2xl font-semibold">
+                {formatNumber(data.projects.length)}
+              </p>
               <p className="text-sm text-muted-foreground">Projects</p>
             </div>
           </CardContent>
@@ -41,7 +69,12 @@ export function ProjectsPage() {
             <Target className="h-5 w-5 text-blue-600" />
             <div>
               <p className="text-2xl font-semibold">
-                {formatNumber(data.projects.reduce((total, project) => total + project.targets, 0))}
+                {formatNumber(
+                  data.projects.reduce(
+                    (total, project) => total + project.targets,
+                    0,
+                  ),
+                )}
               </p>
               <p className="text-sm text-muted-foreground">Targets</p>
             </div>
@@ -52,7 +85,12 @@ export function ProjectsPage() {
             <TriangleAlert className="h-5 w-5 text-amber-600" />
             <div>
               <p className="text-2xl font-semibold">
-                {formatNumber(data.projects.reduce((total, project) => total + project.findings, 0))}
+                {formatNumber(
+                  data.projects.reduce(
+                    (total, project) => total + project.findings,
+                    0,
+                  ),
+                )}
               </p>
               <p className="text-sm text-muted-foreground">Findings</p>
             </div>
@@ -65,7 +103,9 @@ export function ProjectsPage() {
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
               <CardTitle>Organization Projects</CardTitle>
-              <CardDescription>Project ownership, target count, and scan history.</CardDescription>
+              <CardDescription>
+                Project ownership, target count, and scan history.
+              </CardDescription>
             </div>
             <Button onClick={() => navigate("/scan")}>
               <Radar className="h-4 w-4" />
@@ -90,13 +130,17 @@ export function ProjectsPage() {
                 <TableRow key={project.id}>
                   <TableCell>
                     <p className="font-medium">{project.name}</p>
-                    <p className="mt-1 font-mono text-xs text-muted-foreground">{compactId(project.id)}</p>
+                    <p className="mt-1 font-mono text-xs text-muted-foreground">
+                      {compactId(project.id)}
+                    </p>
                   </TableCell>
                   <TableCell>{project.targets}</TableCell>
                   <TableCell>{project.scans}</TableCell>
                   <TableCell>{project.findings}</TableCell>
                   <TableCell>
-                    <Badge variant={project.is_active ? "emerald" : "secondary"}>
+                    <Badge
+                      variant={project.is_active ? "emerald" : "secondary"}
+                    >
                       {project.is_active ? "Active" : "Inactive"}
                     </Badge>
                   </TableCell>
@@ -105,8 +149,12 @@ export function ProjectsPage() {
               ))}
               {!data.projects.length && (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
-                    Projects will be created automatically when scans are started.
+                  <TableCell
+                    colSpan={6}
+                    className="py-10 text-center text-muted-foreground"
+                  >
+                    Projects will be created automatically when scans are
+                    started.
                   </TableCell>
                 </TableRow>
               )}
@@ -118,7 +166,10 @@ export function ProjectsPage() {
       <Card>
         <CardHeader>
           <CardTitle>Project Activity Trail</CardTitle>
-          <CardDescription>Recent project, scan, report, and remediation events with audit integrity metadata.</CardDescription>
+          <CardDescription>
+            Recent project, scan, report, and remediation events with audit
+            integrity metadata.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <Table>
@@ -144,9 +195,13 @@ export function ProjectsPage() {
                   </TableCell>
                   <TableCell>
                     <p className="font-medium">{log.resource_type}</p>
-                    <p className="font-mono text-xs text-muted-foreground">{compactId(log.resource_id)}</p>
+                    <p className="font-mono text-xs text-muted-foreground">
+                      {compactId(log.resource_id)}
+                    </p>
                   </TableCell>
-                  <TableCell className="font-mono text-xs">{compactId(log.user_id)}</TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {compactId(log.user_id)}
+                  </TableCell>
                   <TableCell>{log.ip_address ?? "-"}</TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2 font-mono text-xs">
@@ -158,8 +213,12 @@ export function ProjectsPage() {
               ))}
               {!data.auditLogs.length && (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
-                    Activity events will appear after user, scan, report, or remediation actions.
+                  <TableCell
+                    colSpan={6}
+                    className="py-10 text-center text-muted-foreground"
+                  >
+                    Activity events will appear after user, scan, report, or
+                    remediation actions.
                   </TableCell>
                 </TableRow>
               )}
@@ -170,3 +229,5 @@ export function ProjectsPage() {
     </div>
   );
 }
+
+export { ProjectsPage as default };

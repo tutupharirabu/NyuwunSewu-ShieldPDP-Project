@@ -2,10 +2,17 @@ import { KeyRound, Moon, Server, ShieldCheck, UserRound } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { useAuth } from "@/context/auth-context";
 import { useTheme } from "@/context/theme-context";
 
+export { SettingsPage as default };
 export function SettingsPage() {
   const { user } = useAuth();
   const { theme, toggleTheme } = useTheme();
@@ -15,7 +22,9 @@ export function SettingsPage() {
       <Card>
         <CardHeader>
           <CardTitle>Account</CardTitle>
-          <CardDescription>Authenticated user and role context.</CardDescription>
+          <CardDescription>
+            Authenticated user and role context.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center gap-3 rounded-lg border bg-background p-4">
@@ -29,7 +38,9 @@ export function SettingsPage() {
             <ShieldCheck className="h-5 w-5 text-emerald-600" />
             <div>
               <p className="font-medium">{user?.role}</p>
-              <p className="text-sm text-muted-foreground">Role-based permissions enforced by API</p>
+              <p className="text-sm text-muted-foreground">
+                Role-based permissions enforced by API
+              </p>
             </div>
           </div>
         </CardContent>
@@ -38,7 +49,9 @@ export function SettingsPage() {
       <Card>
         <CardHeader>
           <CardTitle>Console Settings</CardTitle>
-          <CardDescription>Frontend runtime configuration and permissions.</CardDescription>
+          <CardDescription>
+            Frontend runtime configuration and permissions.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
           <div className="grid gap-3 md:grid-cols-2">
@@ -83,4 +96,3 @@ export function SettingsPage() {
     </div>
   );
 }
-

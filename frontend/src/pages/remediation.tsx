@@ -301,6 +301,7 @@ function RemediationKanbanView() {
   );
 }
 
+export { RemediationPage as default };
 export function RemediationPage() {
   const [tab, setTab] = useState("matrix");
 

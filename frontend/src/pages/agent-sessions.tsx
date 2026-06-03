@@ -13,15 +13,28 @@ import {
   ShieldAlert,
   Terminal,
   XCircle,
-  type LucideIcon
+  type LucideIcon,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api";
@@ -63,7 +76,7 @@ const statusColors: Record<string, string> = {
   approved: "bg-green-500",
   denied: "bg-red-500",
   completed: "bg-green-600",
-  failed: "bg-red-600"
+  failed: "bg-red-600",
 };
 
 const statusIcons: Record<string, LucideIcon> = {
@@ -73,29 +86,36 @@ const statusIcons: Record<string, LucideIcon> = {
   approved: CheckCircle,
   denied: XCircle,
   completed: CheckCircle,
-  failed: XCircle
+  failed: XCircle,
 };
 
 const logLevelColors: Record<string, string> = {
   info: "text-blue-600 dark:text-blue-300",
   warning: "text-yellow-600 dark:text-yellow-300",
   error: "text-red-600 dark:text-red-300",
-  success: "text-green-600 dark:text-green-300"
+  success: "text-green-600 dark:text-green-300",
 };
 
 const logLevelIcons: Record<string, string> = {
   info: "📝",
   warning: "⚠️",
   error: "❌",
-  success: "✅"
+  success: "✅",
 };
 
 export function AgentSessionsPage() {
-  const { data: sessions, loading, error, refresh } = useApi<AgentSession[]>(
+  const {
+    data: sessions,
+    loading,
+    error,
+    refresh,
+  } = useApi<AgentSession[]>(
     () => api.agentSessions() as Promise<AgentSession[]>,
     [],
   );
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
+    null,
+  );
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [approvalNotes, setApprovalNotes] = useState("");
 
@@ -164,7 +184,9 @@ export function AgentSessionsPage() {
             size="sm"
             onClick={() => setAutoRefresh(!autoRefresh)}
           >
-            <RefreshCw className={cn("mr-2 h-4 w-4", autoRefresh && "animate-spin")} />
+            <RefreshCw
+              className={cn("mr-2 h-4 w-4", autoRefresh && "animate-spin")}
+            />
             {autoRefresh ? "Auto-refresh ON" : "Auto-refresh"}
           </Button>
           <Button onClick={refresh} size="sm" variant="outline">
@@ -210,14 +232,16 @@ export function AgentSessionsPage() {
                       key={session.id}
                       className={cn(
                         "cursor-pointer hover:bg-muted/50",
-                        selectedSession?.id === session.id && "bg-muted"
+                        selectedSession?.id === session.id && "bg-muted",
                       )}
                       onClick={() => setSelectedSessionId(session.id)}
                     >
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <StatusIcon className="h-4 w-4" />
-                          <code className="text-xs">{compactId(session.id)}</code>
+                          <code className="text-xs">
+                            {compactId(session.id)}
+                          </code>
                         </div>
                       </TableCell>
                       <TableCell>{session.agent_name}</TableCell>
@@ -229,7 +253,9 @@ export function AgentSessionsPage() {
                           className="flex items-center gap-1 text-blue-600 hover:underline"
                           onClick={(e) => e.stopPropagation()}
                         >
-                          <span className="truncate max-w-xs">{session.target_url}</span>
+                          <span className="truncate max-w-xs">
+                            {session.target_url}
+                          </span>
                           <ExternalLink className="h-3 w-3" />
                         </a>
                       </TableCell>
@@ -237,7 +263,7 @@ export function AgentSessionsPage() {
                         <Badge
                           className={cn(
                             "capitalize",
-                            statusColors[session.status] && "bg-opacity-20"
+                            statusColors[session.status] && "bg-opacity-20",
                           )}
                         >
                           {session.status.replace(/_/g, " ")}
@@ -247,10 +273,14 @@ export function AgentSessionsPage() {
                         {session.current_action || "—"}
                       </TableCell>
                       <TableCell>
-                        <Badge variant="secondary">{session.findings_count}</Badge>
+                        <Badge variant="secondary">
+                          {session.findings_count}
+                        </Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {session.started_at ? formatRelativeTime(session.started_at) : "—"}
+                        {session.started_at
+                          ? formatRelativeTime(session.started_at)
+                          : "—"}
                       </TableCell>
                       <TableCell>
                         <Button
@@ -283,7 +313,10 @@ export function AgentSessionsPage() {
               Session Details: {compactId(selectedSession.id)}
             </CardTitle>
             <CardDescription>
-              {selectedSession.target_url} • Started {selectedSession.started_at ? formatRelativeTime(selectedSession.started_at) : "N/A"}
+              {selectedSession.target_url} • Started{" "}
+              {selectedSession.started_at
+                ? formatRelativeTime(selectedSession.started_at)
+                : "N/A"}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
@@ -298,7 +331,9 @@ export function AgentSessionsPage() {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div>
-                    <p className="font-medium">{selectedSession.pending_action.action}</p>
+                    <p className="font-medium">
+                      {selectedSession.pending_action.action}
+                    </p>
                     <p className="text-sm text-muted-foreground">
                       {selectedSession.pending_action.description}
                     </p>
@@ -306,10 +341,14 @@ export function AgentSessionsPage() {
                   <div>
                     <Badge
                       className={cn(
-                        selectedSession.pending_action.risk_level === "critical" && "bg-red-500",
-                        selectedSession.pending_action.risk_level === "high" && "bg-orange-500",
-                        selectedSession.pending_action.risk_level === "medium" && "bg-yellow-500",
-                        selectedSession.pending_action.risk_level === "low" && "bg-green-500"
+                        selectedSession.pending_action.risk_level ===
+                          "critical" && "bg-red-500",
+                        selectedSession.pending_action.risk_level === "high" &&
+                          "bg-orange-500",
+                        selectedSession.pending_action.risk_level ===
+                          "medium" && "bg-yellow-500",
+                        selectedSession.pending_action.risk_level === "low" &&
+                          "bg-green-500",
                       )}
                     >
                       Risk: {selectedSession.pending_action.risk_level}
@@ -360,7 +399,11 @@ export function AgentSessionsPage() {
                       <span className="text-xs text-muted-foreground whitespace-nowrap">
                         {new Date(log.timestamp).toLocaleTimeString()}
                       </span>
-                      <span className={logLevelColors[log.level] || logLevelColors.info}>
+                      <span
+                        className={
+                          logLevelColors[log.level] || logLevelColors.info
+                        }
+                      >
                         {logLevelIcons[log.level] || "📝"}
                       </span>
                       <span className="flex-1">{log.message}</span>
@@ -394,3 +437,5 @@ export function AgentSessionsPage() {
     </div>
   );
 }
+
+export { AgentSessionsPage as default };

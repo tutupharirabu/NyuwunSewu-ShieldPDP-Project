@@ -104,8 +104,9 @@ export function LoginPage() {
               </Button>
             </form>
           </CardContent>
-        </Card>
-      </main>
-    </div>
-  );
-}
+            </Card>
+          </div>
+        );
+      }
+
+      export { LoginPage as default };

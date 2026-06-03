@@ -624,3 +624,5 @@ export function FindingsPage() {
     </div>
   );
 }
+
+export { FindingsPage as default };

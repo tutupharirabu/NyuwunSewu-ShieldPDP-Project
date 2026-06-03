@@ -3,7 +3,13 @@ import { Play, ShieldAlert } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
@@ -22,17 +28,24 @@ function lines(value: string) {
 }
 
 const DEFAULT_USERNAME_CANDIDATES = "admin\nadministrator\njeruk\ntest\nuser";
-const DEFAULT_JWT_SECRETS = "secret\njwtsecret\njwt_secret\nsupersecret\nadmin123\nvuln-bank";
-const DEFAULT_ADMIN_PATHS = "/admin\n/admin/dashboard\n/dashboard\n/api/admin\n/api/admin/analytics\n/sup3r_s3cr3t_admin\n/manage";
+const DEFAULT_JWT_SECRETS =
+  "secret\njwtsecret\njwt_secret\nsupersecret\nadmin123\nvuln-bank";
+const DEFAULT_ADMIN_PATHS =
+  "/admin\n/admin/dashboard\n/dashboard\n/api/admin\n/api/admin/analytics\n/sup3r_s3cr3t_admin\n/manage";
 
+export { ScanPage as default };
 export function ScanPage() {
   const navigate = useNavigate();
   const { data: projects, loading } = useApi(api.projects, []);
   const [targetUrl, setTargetUrl] = useState("");
   const [projectId, setProjectId] = useState("");
-  const [projectName, setProjectName] = useState("Default Security Validation Project");
+  const [projectName, setProjectName] = useState(
+    "Default Security Validation Project",
+  );
   const [allowedDomains, setAllowedDomains] = useState("");
-  const [excludedPaths, setExcludedPaths] = useState("/payment/live\n/admin/delete");
+  const [excludedPaths, setExcludedPaths] = useState(
+    "/payment/live\n/admin/delete",
+  );
   const [scopeBoundaries, setScopeBoundaries] = useState("");
   const [rate, setRate] = useState(3);
   const [maxDepth, setMaxDepth] = useState(2);
@@ -50,7 +63,7 @@ export function ScanPage() {
 
   const selectedProject = useMemo(
     () => projects?.find((project) => project.id === projectId),
-    [projectId, projects]
+    [projectId, projects],
   );
 
   async function submit(event: FormEvent) {
@@ -60,18 +73,20 @@ export function ScanPage() {
     setMessage(null);
     try {
       const requestedPaths = lines(initialPaths);
-      const seededPaths = loginPath.trim() && username && password
-        ? Array.from(new Set([loginPath.trim(), ...requestedPaths]))
-        : requestedPaths;
+      const seededPaths =
+        loginPath.trim() && username && password
+          ? Array.from(new Set([loginPath.trim(), ...requestedPaths]))
+          : requestedPaths;
       const payload: ScanStartPayload = {
         target_url: targetUrl,
         project_id: selectedProject ? selectedProject.id : null,
         project_name: selectedProject ? null : projectName,
         allowed_domains: lines(allowedDomains),
         initial_paths: seededPaths,
-        credential_auth: username && password
-          ? { login_path: loginPath.trim() || "/login", username, password }
-          : null,
+        credential_auth:
+          username && password
+            ? { login_path: loginPath.trim() || "/login", username, password }
+            : null,
         policy: {
           name: "Frontend Safe Scan Policy",
           max_requests_per_second: rate,
@@ -82,7 +97,7 @@ export function ScanPage() {
           forbidden_paths: lines(excludedPaths),
           scope_boundaries: lines(scopeBoundaries),
           max_depth: maxDepth,
-          max_pages: maxPages
+          max_pages: maxPages,
         },
         primary_headers: {},
         secondary_headers: {},
@@ -94,8 +109,8 @@ export function ScanPage() {
           username_candidates: lines(DEFAULT_USERNAME_CANDIDATES),
           weak_jwt_secrets: lines(DEFAULT_JWT_SECRETS),
           admin_paths: lines(DEFAULT_ADMIN_PATHS),
-          modern_vuln_bank_probes: true
-        }
+          modern_vuln_bank_probes: true,
+        },
       };
       const result = await api.startScan(payload);
       setMessage(`Scan ${result.scan_id} queued. Status: ${result.status}.`);
@@ -114,7 +129,10 @@ export function ScanPage() {
       <Card>
         <CardHeader>
           <CardTitle>Create Scan</CardTitle>
-          <CardDescription>Start a scoped, policy-enforced validation run against an authorized target.</CardDescription>
+          <CardDescription>
+            Start a scoped, policy-enforced validation run against an authorized
+            target.
+          </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-5 xl:grid-cols-2">
           <div className="space-y-2">
@@ -129,7 +147,10 @@ export function ScanPage() {
           </div>
           <div className="space-y-2">
             <Label>Project</Label>
-            <Select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+            <Select
+              value={projectId}
+              onChange={(event) => setProjectId(event.target.value)}
+            >
               <option value="">Create or use project name</option>
               {(projects ?? []).map((project) => (
                 <option key={project.id} value={project.id}>
@@ -164,35 +185,69 @@ export function ScanPage() {
         <Card>
           <CardHeader>
             <CardTitle>Scan Policy</CardTitle>
-            <CardDescription>Bound request rate, crawl depth, validation families, and excluded paths.</CardDescription>
+            <CardDescription>
+              Bound request rate, crawl depth, validation families, and excluded
+              paths.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
             <div className="grid gap-4 md:grid-cols-3">
               <div className="space-y-2">
                 <Label>Requests per second</Label>
-                <Input type="number" min={0.2} max={20} step={0.2} value={rate} onChange={(event) => setRate(Number(event.target.value))} />
+                <Input
+                  type="number"
+                  min={0.2}
+                  max={20}
+                  step={0.2}
+                  value={rate}
+                  onChange={(event) => setRate(Number(event.target.value))}
+                />
               </div>
               <div className="space-y-2">
                 <Label>Max depth</Label>
-                <Input type="number" min={0} max={5} value={maxDepth} onChange={(event) => setMaxDepth(Number(event.target.value))} />
+                <Input
+                  type="number"
+                  min={0}
+                  max={5}
+                  value={maxDepth}
+                  onChange={(event) => setMaxDepth(Number(event.target.value))}
+                />
               </div>
               <div className="space-y-2">
                 <Label>Max pages</Label>
-                <Input type="number" min={1} max={5000} value={maxPages} onChange={(event) => setMaxPages(Number(event.target.value))} />
+                <Input
+                  type="number"
+                  min={1}
+                  max={5000}
+                  value={maxPages}
+                  onChange={(event) => setMaxPages(Number(event.target.value))}
+                />
               </div>
             </div>
 
             <div className="grid gap-3 md:grid-cols-3">
               <label className="flex items-center gap-2 rounded-lg border bg-background p-3 text-sm">
-                <input type="checkbox" checked={allowSqli} onChange={(event) => setAllowSqli(event.target.checked)} />
+                <input
+                  type="checkbox"
+                  checked={allowSqli}
+                  onChange={(event) => setAllowSqli(event.target.checked)}
+                />
                 Injection / path validation
               </label>
               <label className="flex items-center gap-2 rounded-lg border bg-background p-3 text-sm">
-                <input type="checkbox" checked={allowAuth} onChange={(event) => setAllowAuth(event.target.checked)} />
+                <input
+                  type="checkbox"
+                  checked={allowAuth}
+                  onChange={(event) => setAllowAuth(event.target.checked)}
+                />
                 Auth / API exposure validation
               </label>
               <label className="flex items-center gap-2 rounded-lg border bg-background p-3 text-sm">
-                <input type="checkbox" checked={allowTiming} onChange={(event) => setAllowTiming(event.target.checked)} />
+                <input
+                  type="checkbox"
+                  checked={allowTiming}
+                  onChange={(event) => setAllowTiming(event.target.checked)}
+                />
                 Timing probes
               </label>
             </div>
@@ -200,11 +255,18 @@ export function ScanPage() {
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label>Excluded and forbidden paths</Label>
-                <Textarea value={excludedPaths} onChange={(event) => setExcludedPaths(event.target.value)} />
+                <Textarea
+                  value={excludedPaths}
+                  onChange={(event) => setExcludedPaths(event.target.value)}
+                />
               </div>
               <div className="space-y-2">
                 <Label>Scope boundaries</Label>
-                <Textarea placeholder="example.com" value={scopeBoundaries} onChange={(event) => setScopeBoundaries(event.target.value)} />
+                <Textarea
+                  placeholder="example.com"
+                  value={scopeBoundaries}
+                  onChange={(event) => setScopeBoundaries(event.target.value)}
+                />
               </div>
             </div>
           </CardContent>
@@ -213,7 +275,10 @@ export function ScanPage() {
         <Card>
           <CardHeader>
             <CardTitle>Authenticated Discovery</CardTitle>
-            <CardDescription>Optionally start from known entry paths and establish a normal application session before crawling deeper.</CardDescription>
+            <CardDescription>
+              Optionally start from known entry paths and establish a normal
+              application session before crawling deeper.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
             <div className="space-y-2">
@@ -228,16 +293,32 @@ export function ScanPage() {
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="loginPath">Login path</Label>
-                <Input id="loginPath" value={loginPath} onChange={(event) => setLoginPath(event.target.value)} placeholder="/login" />
+                <Input
+                  id="loginPath"
+                  value={loginPath}
+                  onChange={(event) => setLoginPath(event.target.value)}
+                  placeholder="/login"
+                />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="authUsername">Username</Label>
-                <Input id="authUsername" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="off" />
+                <Input
+                  id="authUsername"
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  autoComplete="off"
+                />
               </div>
             </div>
             <div className="space-y-2">
               <Label htmlFor="authPassword">Password</Label>
-              <Input id="authPassword" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" />
+              <Input
+                id="authPassword"
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                autoComplete="new-password"
+              />
             </div>
             <div className="rounded-lg border bg-muted/60 p-3 text-sm">
               <div className="flex items-center gap-2 font-medium">
@@ -245,7 +326,10 @@ export function ScanPage() {
                 Production safety
               </div>
               <p className="mt-2 text-muted-foreground">
-                Credentials establish an in-scope session only for this scan and are not saved with evidence. Token storage, CORS, username-differential, and JWT integrity checks are bounded and do not modify account data.
+                Credentials establish an in-scope session only for this scan and
+                are not saved with evidence. Token storage, CORS,
+                username-differential, and JWT integrity checks are bounded and
+                do not modify account data.
               </p>
             </div>
           </CardContent>
