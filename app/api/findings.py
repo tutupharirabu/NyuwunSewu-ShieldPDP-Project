@@ -146,42 +146,39 @@ async def ingest_agent_finding(
     if not _verify_agent_auth(x_agent_secret):
         raise HTTPException(status_code=401, detail="Invalid agent secret")
 
-    # Resolve target and scan if provided
-    target_id = None
-    scan_id = None
-    organization_id = None
-    project_id = None
-
-    if payload.scan_id:
-        from app.models import Scan, Target
-
-        scan_result = await session.execute(
-            select(Scan).where(Scan.id == payload.scan_id)
+    # The agent secret is a single shared secret across tenants, so an ingest
+    # request carries no trustworthy tenant identity. Resolve the owning
+    # organization STRICTLY from the referenced scan -- we deliberately do NOT
+    # fall back to an arbitrary organization (e.g. Organization.limit(1)),
+    # which would let any holder of the shared secret write findings into
+    # another tenant's view (cross-tenant IDOR). This mirrors the guard already
+    # enforced for /agent-sessions/ingest.
+    if not payload.scan_id:
+        raise HTTPException(
+            status_code=400,
+            detail="scan_id is required to resolve the owning organization",
         )
-        scan = scan_result.scalar_one_or_none()
-        if scan:
-            scan_id = scan.id
-            target_id = scan.target_id
-            organization_id = scan.organization_id
-            project_id = scan.project_id
-        else:
-            raise HTTPException(status_code=404, detail=f"Scan {payload.scan_id} not found")
 
-    if not organization_id:
-        # Use the default organization for agent-submitted findings
-        from app.models import Organization
+    from app.models import Scan
 
-        org_result = await session.execute(select(Organization).limit(1))
-        org = org_result.scalar_one_or_none()
-        if not org:
-            raise HTTPException(status_code=400, detail="No organization found; run a scan first to bootstrap")
-        organization_id = org.id
+    scan = (
+        await session.execute(select(Scan).where(Scan.id == payload.scan_id))
+    ).scalar_one_or_none()
+    if scan is None:
+        raise HTTPException(
+            status_code=404, detail=f"Scan {payload.scan_id} not found"
+        )
+
+    scan_id = scan.id
+    target_id = scan.target_id
+    organization_id = scan.organization_id
+    project_id = scan.project_id
 
     severity = payload.severity.lower()
     finding = Finding(
         organization_id=organization_id,
-        project_id=project_id or "00000000-0000-0000-0000-000000000000",
-        target_id=target_id or "00000000-0000-0000-0000-000000000000",
+        project_id=project_id,
+        target_id=target_id,
         scan_id=scan_id,
         endpoint_id=None,
         finding_type=payload.finding_type,

@@ -38,9 +38,17 @@ class WebhookResponse(BaseModel):
 class AgentFindingIngest(BaseModel):
     """Finding submitted by an external agent (e.g. Phantom)."""
 
-    scan_id: str | None = Field(None, description="Link to existing scan, optional")
+    scan_id: str | None = Field(
+        None,
+        description=(
+            "Existing scan to attach the finding to. Required: the owning "
+            "organization is resolved strictly from this scan (the shared agent "
+            "secret carries no tenant identity)."
+        ),
+    )
     target_url: str | None = Field(
-        None, description="Target URL if scan_id not provided"
+        None,
+        description="Informational only; the tenant is resolved from scan_id, not this.",
     )
     finding_type: str = Field(..., max_length=120)
     title: str = Field(..., min_length=1, max_length=255)
