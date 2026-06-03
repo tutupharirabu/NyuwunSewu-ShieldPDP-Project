@@ -65,6 +65,26 @@ done
 echo -e "\n${BLUE}4. Starting Phantom webhook receiver...${NC}"
 echo "   Receiver will listen on port 8080"
 
+# Load environment from .env file
+set -a
+source .env
+set +a
+
+# Verify required variables are set
+REQUIRED_VARS=(PHANTOM_WEBHOOK_SECRET PHANTOM_AGENT_SECRET ADMIN_PASSWORD)
+MISSING=()
+for var in "${REQUIRED_VARS[@]}"; do
+    if [ -z "${!var}" ]; then
+        MISSING+=("$var")
+    fi
+done
+
+if [ ${#MISSING[@]} -gt 0 ]; then
+    echo "❌ Missing required environment variables: ${MISSING[*]}"
+    echo "   Please set them in .env file"
+    exit 1
+fi
+
 python3 phantom_webhook_receiver.py &
 WEBHOOK_PID=$!
 

@@ -27,12 +27,11 @@ services:
 
   web:
     build: .
+    env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://nyuwunsewu:nyuwunsewu@postgres:5432/nyuwunsewu
-      REDIS_URL: redis://redis:6379/0
-      USE_CELERY: "true"
-      SECRET_KEY: replace-with-a-long-random-compose-secret
-      BOOTSTRAP_ADMIN_EMAIL: admin@nyuwunsewu.local
+      SECRET_KEY: ${SECRET_KEY}
+      AGENT_SECRET: ${PHANTOM_AGENT_SECRET}
       BOOTSTRAP_ADMIN_PASSWORD: ChangeMe123!
       ALLOW_PRIVATE_TARGETS: "false"
     ports:
@@ -45,12 +44,14 @@ services:
 
   worker:
     build: .
+    env_file: .env
     command: celery -A worker.celery_app.celery_app worker --loglevel=INFO --concurrency=2
+    restart: always
     environment:
       DATABASE_URL: postgresql+asyncpg://nyuwunsewu:nyuwunsewu@postgres:5432/nyuwunsewu
-      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY}
+      AGENT_SECRET: ${PHANTOM_AGENT_SECRET}
       USE_CELERY: "true"
-      SECRET_KEY: replace-with-a-long-random-compose-secret
       ALLOW_PRIVATE_TARGETS: "false"
       RUN_MIGRATIONS: "false"
     depends_on:
@@ -63,4 +64,3 @@ services:
 
 volumes:
   pgdata:
-

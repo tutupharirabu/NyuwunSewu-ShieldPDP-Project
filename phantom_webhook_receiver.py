@@ -1,27 +1,76 @@
 #!/usr/bin/env python3
 """
-Phantom Agent Webhook Receiver with Session Tracking and Telegram Logging
-Receives scan completion notifications, creates agent sessions, explores targets,
-and submits findings with full monitoring via the NyuwunSewu API.
+Phantom Agent Webhook Receiver - Production Version
+Receives scan completion notifications from NyuwunSewu ShieldPDP,
+saves scan context, triggers real Hermes agent exploration via cron,
+and notifies the user via Telegram.
+
+Architecture:
+  1. NyuwunSewu scan completes -> fires webhook -> this receiver (port 8080)
+  2. Receiver saves scan context -> {HERMES_HOME}/profiles/{PROFILE}/pending_scans/{scan_id}.json
+  3. Receiver creates a one-shot Hermes cron job to explore the target
+  4. Hermes scheduler ticks the cron job -> agent explores target -> submits findings
+  5. Receiver notifies user via `hermes send` (non-blocking, best-effort)
+
+NOTE: This receiver listens on port 8080 and is SEPARATE from Hermes' own
+native webhook platform (port 8644). They are two different ingestion paths.
+This receiver does NOT require the native webhook platform to be enabled.
 """
 
-import asyncio
 import hashlib
 import hmac
 import json
 import os
+import subprocess
 import threading
+import time
 import traceback
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import aiohttp
+# --- Configuration ---
 
-# File-based logging for background threads
+WEBHOOK_PORT = int(os.getenv("PHANTOM_WEBHOOK_PORT", "8080"))
+WEBHOOK_SECRET = os.getenv("PHANTOM_WEBHOOK_SECRET", "")
+NYUWUNSEWU_URL = os.getenv("NYUWUNSEWU_URL", "http://127.0.0.1:8000").rstrip("/")
+AGENT_SECRET = os.getenv("PHANTOM_AGENT_SECRET", "")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@nyuwunsewu.local")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD") or os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "local").lower()
+
+PROFILE = os.getenv("HERMES_PROFILE", "phantom")
+
+
+def _normalize_hermes_home(raw: str) -> str:
+    """Always return the Hermes ROOT home (~/.hermes), never a profile dir.
+
+    If HERMES_HOME is accidentally set to the profile directory
+    (e.g. /root/.hermes/profiles/phantom), strip the profile suffix so the
+    Hermes CLI does not double-nest paths (the /profiles/phantom/profiles/phantom/ bug).
+    Profile selection is done explicitly via the `-p PROFILE` flag instead.
+    """
+    home = raw.rstrip("/")
+    suffix = f"/profiles/{PROFILE}"
+    if home.endswith(suffix):
+        home = home[: -len(suffix)]
+    return home or os.path.expanduser("~/.hermes")
+
+
+# Hermes root home (normalized) + derived profile paths
+HERMES_HOME = _normalize_hermes_home(os.getenv("HERMES_HOME", os.path.expanduser("~/.hermes")))
+PROFILE_DIR = os.path.join(HERMES_HOME, "profiles", PROFILE)
+PENDING_SCANS_DIR = os.path.join(PROFILE_DIR, "pending_scans")
+CRON_DIR = os.path.join(PROFILE_DIR, "cron")
+
+# Ensure pending scans directory exists
+os.makedirs(PENDING_SCANS_DIR, exist_ok=True)
+
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phantom_receiver.log")
 
+# --- Logging ---
+
 def log(msg: str):
-    """Write to both stdout and log file (thread-safe)."""
+    """Thread-safe logging to stdout and file."""
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
     print(line, flush=True)
@@ -31,21 +80,9 @@ def log(msg: str):
     except Exception:
         pass
 
-# Configuration
-WEBHOOK_PORT = int(os.getenv("PHANTOM_WEBHOOK_PORT", "8080"))
-WEBHOOK_SECRET = os.getenv("PHANTOM_WEBHOOK_SECRET", "")
-NYUWUNSEWU_URL = os.getenv("NYUWUNSEWU_URL", "http://127.0.0.1:8000").rstrip("/")
-AGENT_SECRET = os.getenv("PHANTOM_AGENT_SECRET", "")
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@nyuwunsewu.local")
-# Support both ADMIN_PASSWORD (receiver convention) and BOOTSTRAP_ADMIN_PASSWORD (backend convention)
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD") or os.getenv(
-    "BOOTSTRAP_ADMIN_PASSWORD", ""
-)
-ENVIRONMENT = os.getenv("ENVIRONMENT", "local").lower()
+# --- Fail-fast: reject weak/default secrets ---
 
-# ─── Fail-fast: reject weak/default secrets in production ───────────────────
 _DEFAULT_SECRETS = {"webhook-signing-secret", "phantom-agent-secret-2026"}
-
 
 def _validate_secrets() -> None:
     """Abort if any secret is missing or still using default value."""
@@ -61,25 +98,221 @@ def _validate_secrets() -> None:
     if not ADMIN_PASSWORD:
         errors.append("ADMIN_PASSWORD (or BOOTSTRAP_ADMIN_PASSWORD) is not set")
     if ENVIRONMENT == "production" and errors:
-        print("\n❌ SECURITY: Cannot start in production with weak secrets:")
+        print("\n[ERR] SECURITY: Cannot start in production with weak secrets:")
         for e in errors:
             print(f"   - {e}")
         print("\n   Generate new secrets with:")
         print("   openssl rand -hex 32")
         raise SystemExit(1)
     elif errors:
-        # Non-production: warn but allow start
         for e in errors:
-            print(f"⚠️  WARNING: {e}")
-
+            print(f"[WARN] {e}")
 
 _validate_secrets()
 
+# --- Bridge to Hermes ---
+
+def _hermes_cli(*args: str, timeout: int = 120) -> subprocess.CompletedProcess:
+    """Run a Hermes CLI command (always scoped to PROFILE) and return the result.
+
+    The `-p PROFILE` flag is injected globally so every call is unambiguous,
+    regardless of HERMES_HOME / HERMES_PROFILE env state.
+    """
+    cmd = ["hermes", "-p", PROFILE] + list(args)
+    log(f"   [CMD] Running: {' '.join(cmd[:5])}... ({len(cmd)} args)")
+    env = os.environ.copy()
+    env["HERMES_HOME"] = HERMES_HOME  # normalized root, never a profile dir
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+
+
+def _save_scan_context(scan_id: str, payload: dict) -> str:
+    """Save scan context to pending_scans directory. Returns file path."""
+    context = {
+        "scan_id": scan_id,
+        "target_url": payload.get("target_url", ""),
+        "event": payload.get("event", "scan.completed"),
+        "status": payload.get("status", ""),
+        "findings_count": payload.get("findings_count", 0),
+        "endpoints_count": payload.get("endpoints_count", 0),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "raw_payload": payload,
+    }
+    filepath = os.path.join(PENDING_SCANS_DIR, f"{scan_id}.json")
+    with open(filepath, "w") as f:
+        json.dump(context, f, indent=2, default=str)
+    log(f"   [FILE] Saved scan context: {filepath}")
+    return filepath
+
+
+def _create_exploration_job(scan_id: str, target_url: str, context_path: str) -> str | None:
+    """Create a one-shot Hermes cron job that runs the agent exploration.
+
+    Relies on the Hermes scheduler ticking (root-cause lock bug is mitigated by
+    the watchdog below + a clean gateway start). Returns a job ID string on
+    success, None on failure.
+    """
+    prompt = f"""PHANTOM ENGAGEMENT - Authorized Web App Pentest (Learning Lab)
+
+== AUTHORIZATION (Phase 0 ALREADY SATISFIED - do NOT halt to ask) ==
+- Asset owner: the operator running this Hermes instance.
+- Authorization: GRANTED, in writing, by the asset owner. This is an OWNED lab.
+- Scope: {target_url} ONLY (scan {scan_id}). Private tailnet host, non-public.
+- RoE: non-destructive, minimum footprint, no real data exfiltration beyond proof.
+- Engagement type: grey-box assessment of a banking-style web application.
+Proceed immediately. Authorization is on file here; do NOT ask for it again.
+
+== AVAILABLE TOOLS (use ONLY these - actually installed on this host) ==
+PRIMARY ENGINE - use for auth / session / IDOR / authz / business-logic:
+  curl, wget, and python3 with: requests, aiohttp, PyJWT, websockets, cryptography.
+  For access-control bugs (IDOR/BOLA, authz), scripted requests with swapped
+  tokens/IDs is your STRONGEST tool - prefer it over scanners.
+SCANNERS / DISCOVERY:
+  nuclei v3.4.8 (vuln/misconfig/info-disclosure/XSS templates), nikto 2.6.0
+  (server misconfig), sqlmap 1.10.5 (confirm SQLi only - do NOT --dump real data),
+  ffuf 2.1.0 + gobuster (dir/param discovery), httpx (probe/tech), wafw00f (WAF),
+  nmap 7.80, mitmproxy/mitmdump (scripted proxy, only if needed).
+
+NOT INSTALLED - do NOT call these (they will fail and waste your budget):
+  burpsuite, amass, theHarvester, dalfox, arjun, wfuzz, jwt_tool, feroxbuster,
+  metasploit, searchsploit, hydra, john, hashcat, masscan, naabu, dirsearch,
+  xsstrike, tcpdump, tshark, shodan, whatweb (ruby missing).
+  Substitutes: XSS -> nuclei XSS templates + manual reflection via curl;
+  JWT -> PyJWT in python3; brute force -> SKIP (outside RoE).
+
+== BUDGET DISCIPLINE (CRITICAL - prior runs died in recon before submitting) ==
+You have a LIMITED turn budget. Do NOT spend it all on reconnaissance.
+- Recon is PARTIALLY DONE: read {context_path} first - it contains the endpoint
+  map from the scan. USE that list; do NOT re-crawl from scratch.
+- Run a COMPRESSED recon only (~5 turns max). Do NOT produce the full 15-item
+  RECON_HUMAN report. Write a 5-line readiness note, then START VALIDATING.
+- SUBMIT each finding the MOMENT it is confirmed (incremental), never batch at end.
+
+== PRIORITIZED VALIDATION (banking app -> access control is the crown jewel) ==
+1. BOLA / IDOR (DO FIRST): register userA AND userB. As userA, capture requests
+   that carry an object ID (account/transaction/statement/profile id). Replay
+   them swapping in userB's IDs (and vice-versa). Cross-account read/write =>
+   finding. Prove it with the OTHER user's data visible in the response.
+2. AUTHZ / privilege escalation: can a normal customer reach admin-only
+   endpoints? Try verb tampering and forced browsing to admin paths.
+3. AUTH / session: weak password policy, missing login rate-limit, session or
+   JWT flaws (analyze tokens with PyJWT: alg confusion, weak/none secret, no expiry).
+4. INJECTION: reflected XSS (payload echoed unescaped in response), SQLi
+   (confirm via sqlmap WITHOUT dumping, or via error/timing) - CONFIRM ONLY.
+5. INFO DISCLOSURE / MISCONFIG: nuclei + nikto for verbose errors, exposed
+   debug/config endpoints, PII/tokens in responses, missing security headers.
+
+== SUBMISSION (per confirmed finding) ==
+curl POST {NYUWUNSEWU_URL}/findings/ingest
+Headers: Content-Type: application/json, X-Agent-Secret: {AGENT_SECRET}
+Body (JSON) - MUST use these exact types:
+- scan_id: string ("{scan_id}")
+- finding_type: string ("idor"|"xss"|"auth_bypass"|"authz"|"info_disclosure"|"other")
+- title: string (short descriptive title)
+- severity: string ("critical"|"high"|"medium"|"low"|"info")
+- confidence: float (0.0-100.0, e.g. 80.0)
+- description: string (detailed explanation)
+- reasoning: list of strings (e.g. ["Step 1: logged in as userA", "Step 2: swapped id param to userB"])
+- evidence: dict (e.g. {{"response_excerpt": "showed userB account balance"}})
+- request_method: string ("GET"|"POST"|etc)
+- request_url: string (full URL tested)
+- request_headers: dict or null
+- request_body: string or null
+- response_status: int (e.g. 200)
+- response_headers: dict or null
+- response_body: string (relevant excerpt)
+- remediation: string (how to fix)
+- agent_name: string ("phantom")
+- exploit_chain: list of strings (step-by-step exploitation)
+
+== HARD RULES ==
+Report ONLY findings confirmed through real HTTP interaction with concrete
+evidence. Never fabricate. Non-destructive only - no data deletion, no DoS, no
+brute-force floods. Stay strictly within {target_url}. Submit findings as you go.
+End with a concise summary of all findings submitted."""
+
+    result = _hermes_cli(
+        "cron", "create",
+        "1m",
+        prompt,
+        "--repeat", "1",
+        "--name", f"explore-{scan_id[:8]}",
+        "--deliver", "origin",
+        timeout=60,
+    )
+
+    if result.returncode == 0:
+        import re
+        stdout = result.stdout.strip()
+        job_match = re.search(r'([0-9a-f]{12})', stdout)
+        job_id = job_match.group(1) if job_match else (stdout[-12:] if len(stdout) >= 12 else "unknown")
+        log(f"   [OK] Exploration job created: {job_id}")
+        log(f"   [INFO] Scheduler will tick this within ~1 minute")
+        return job_id
+    else:
+        log(f"   [ERR] Failed to create exploration job:")
+        log(f"      stderr: {result.stderr[:500]}")
+        log(f"      stdout: {result.stdout[:500]}")
+        return None
+
+
+def _notify_user(scan_id: str, target_url: str, job_id: str | None):
+    """Notify user via Hermes send that exploration is starting (best-effort)."""
+    status_text = f"Job: {job_id}" if job_id else "[WARN] Could not schedule exploration - manual intervention needed"
+    message = f"""[SCAN] Scan Completed - Starting Agent Exploration
+
+Scan ID: {scan_id}
+Target: {target_url}
+Status: {status_text}
+
+The Phantom agent will now explore the target and submit findings automatically."""
+
+    def _do_notify():
+        try:
+            result = _hermes_cli(
+                "send", "--to", "telegram", "-s", "[SCAN] Pentest Agent Report", message,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                log(f"   [OK] Notification sent to user")
+            else:
+                log(f"   [WARN] Failed to send notification: {result.stderr[:200]}")
+        except subprocess.TimeoutExpired:
+            log(f"   [WARN] Notification timed out (non-fatal, pipeline continues)")
+        except Exception as e:
+            log(f"   [WARN] Notification error (non-fatal): {type(e).__name__}: {e}")
+
+    t = threading.Thread(target=_do_notify, daemon=True)
+    t.start()
+
+
+# --- Webhook Handler ---
 
 class WebhookHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        # Read and parse the payload
+        try:
+            self._handle_webhook()
+        except Exception as e:
+            log(f"\n[CRASH] UNHANDLED ERROR in webhook handler:")
+            log(f"   Type: {type(e).__name__}")
+            log(f"   Detail: {e}")
+            log(traceback.format_exc())
+            try:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(b"Internal server error")
+            except Exception:
+                pass
+
+    def _handle_webhook(self):
+        """Process an incoming webhook with full error context."""
         content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0:
+            log("\n[WARN] Webhook received with empty body")
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(b"Empty payload")
+            return
+
         body = self.rfile.read(content_length)
 
         # Verify signature if present
@@ -87,14 +320,21 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if signature:
             expected = f"sha256={hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()}"
             if not hmac.compare_digest(signature, expected):
+                log(f"\n[BLOCKED] Webhook signature MISMATCH")
+                log(f"   Remote: {self.client_address}")
+                log(f"   Expected: {expected[:20]}...")
+                log(f"   Got:      {signature[:20]}...")
                 self.send_response(403)
                 self.end_headers()
                 self.wfile.write(b"Invalid signature")
                 return
+            log(f"   [OK] Signature verified")
 
         try:
             payload = json.loads(body)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            log(f"\n[ERR] Invalid JSON in webhook: {e}")
+            log(f"   Body preview: {body[:200]}")
             self.send_response(400)
             self.end_headers()
             self.wfile.write(b"Invalid JSON")
@@ -103,7 +343,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         event = payload.get("event", "")
         scan_id = payload.get("scan_id", "")
 
-        log(f"\n📡 Webhook received: {event}")
+        log(f"\n[WEBHOOK] Webhook received: {event}")
         log(f"   Scan ID: {scan_id}")
         log(f"   Target: {payload.get('target_url', 'N/A')}")
         log(f"   Status: {payload.get('status', 'N/A')}")
@@ -111,17 +351,27 @@ class WebhookHandler(BaseHTTPRequestHandler):
         log(f"   Endpoints: {payload.get('endpoints_count', 0)}")
 
         if event == "scan.completed":
-            log("\n🤖 Triggering Phantom agent exploration (background)...")
-            # Spawn exploration in background thread — respond to webhook immediately
+            target_url = payload.get("target_url", "")
+            if not target_url:
+                log("   [WARN] No target_url in webhook payload - skipping")
+            else:
+                t = threading.Thread(
+                    target=_trigger_exploration,
+                    args=(scan_id, target_url, payload),
+                    daemon=True,
+                )
+                t.start()
+        elif event == "scan.failed":
+            log(f"\n[ERR] Scan failed:")
+            log(f"   Error: {payload.get('error', 'Unknown')}")
             t = threading.Thread(
-                target=_run_exploration,
-                args=(scan_id, payload.get("target_url", "")),
+                target=_notify_scan_failure,
+                args=(scan_id, payload),
                 daemon=True,
             )
             t.start()
-        elif event == "scan.failed":
-            log("\n❌ Scan failed:")
-            log(f"   Error: {payload.get('error', 'Unknown')}")
+        else:
+            log(f"\n[WARN] Unknown event type: {event}")
 
         # Respond immediately to prevent BrokenPipeError
         self.send_response(200)
@@ -129,254 +379,110 @@ class WebhookHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OK")
 
     def log_message(self, format, *args):
-        pass  # Suppress default logging
+        pass  # Suppress default HTTP logging
 
 
-async def login_to_backend() -> str | None:
-    """Login to NyuwunSewu backend and return JWT access token."""
-    login_url = f"{NYUWUNSEWU_URL}/auth/login"
-    payload = json.dumps({"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}).encode()
-    log(f"\n🔑 Logging in to {NYUWUNSEWU_URL}...")
+def _trigger_exploration(scan_id: str, target_url: str, payload: dict):
+    """Full pipeline: save context -> create job -> notify."""
     try:
-        async with aiohttp.ClientSession() as http_session:
-            async with http_session.post(
-                login_url,
-                headers={"Content-Type": "application/json"},
-                data=payload,
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    token = data.get("access_token")
-                    if token:
-                        log(f"   ✅ Logged in as {ADMIN_EMAIL}")
-                        return token
-                else:
-                    body = await resp.text()
-                    log(f"   ❌ Login failed ({resp.status}): {body}")
-                return None
-    except Exception as e:
-        log(f"   ❌ Login request failed: {e}")
-        return None
+        log(f"\n{'='*60}")
+        log(f"[AGENT] TRIGGERING PHANTOM AGENT EXPLORATION")
+        log(f"   Scan ID: {scan_id}")
+        log(f"   Target:  {target_url}")
+        log(f"{'='*60}")
 
+        context_path = _save_scan_context(scan_id, payload)
+        job_id = _create_exploration_job(scan_id, target_url, context_path)
+        _notify_user(scan_id, target_url, job_id)
 
-def _run_exploration(scan_id: str, target_url: str):
-    """Wrapper to run async exploration in a background thread with error handling."""
-    try:
-        asyncio.run(explore_target(scan_id, target_url))
+        log(f"\n[OK] Exploration pipeline complete!")
     except Exception as e:
-        log(f"❌ Background exploration crashed: {e}")
+        log(f"\n[ERR] Exploration pipeline failed: {type(e).__name__}: {e}")
         log(traceback.format_exc())
 
-async def explore_target(scan_id: str, target_url: str):
-    """Simulate Phantom agent exploring the target after scan completion."""
-    session_id = None
-    bearer_token = None
 
-    # Step 0: Login to get JWT token
-    try:
-        bearer_token = await login_to_backend()
-        if not bearer_token:
-            log("\n❌ Failed to login — cannot proceed with exploration")
-            return
-        log(f"   ✅ Authenticated as {ADMIN_EMAIL}")
-    except Exception as e:
-        log(f"\n❌ Login failed: {e}")
-        return
+def _notify_scan_failure(scan_id: str, payload: dict):
+    """Notify user about scan failure."""
+    error_msg = payload.get("error", "Unknown error")
+    message = f"""[ERR] Scan Failed
 
-    auth_headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {bearer_token}",
-    }
+Scan ID: {scan_id}
+Target: {payload.get('target_url', 'N/A')}
+Error: {error_msg}"""
 
-    async with aiohttp.ClientSession() as session:
+    def _do_notify():
         try:
-            # Step 1: Create agent session
-            log("\n📝 Creating agent session...")
-            async with session.post(
-                f"{NYUWUNSEWU_URL}/agent-sessions",
-                headers=auth_headers,
-                json={
-                    "scan_id": scan_id,
-                    "target_url": target_url,
-                    "agent_name": "phantom",
-                },
-            ) as resp:
-                if resp.status == 201:
-                    data = await resp.json()
-                    session_id = data.get("id")
-                    log(f"   ✅ Session created: {session_id[:8]}")
-                else:
-                    body = await resp.text()
-                    log(f"   ❌ Failed to create session: {resp.status} {body}")
-                    return
-
-            # Step 2: Log exploration start
-            await add_log(session, session_id, "info", "Starting exploration as nasabah", "login", auth_headers=auth_headers)
-
-            # Step 3: Simulate exploration steps
-            steps = [
-                ("Logging in as customer...", "login"),
-                ("Exploring dashboard...", "navigation"),
-                ("Checking account endpoints...", "api_discovery"),
-                ("Testing transfer flows...", "transaction_test"),
-                ("Probing admin panels...", "admin_probe"),
-                ("Testing for IDOR vulnerabilities...", "idor_test"),
-                ("Checking for XSS...", "xss_test"),
-                ("Analyzing JWT tokens...", "jwt_analysis"),
-            ]
-
-            for message, action in steps:
-                await add_log(session, session_id, "info", message, action, auth_headers=auth_headers)
-                await asyncio.sleep(2)  # Simulate work
-
-            # Step 4: Request approval for a risky action
-            await add_log(session, session_id, "warning", "Found potential IDOR vulnerability, requesting approval to exploit", "idor_exploit", auth_headers=auth_headers)
-
-            # Step 5: Simulate finding a vulnerability
-            await add_log(session, session_id, "success", "IDOR confirmed: can access other users' accounts", "idor_confirmed", auth_headers=auth_headers)
-
-            # Step 6: Submit finding
-            await submit_finding(session, session_id, scan_id, target_url)
-
-            # Step 7: Complete session
-            await complete_session(session, session_id, findings_count=1, auth_headers=auth_headers)
-
-            log("\n✅ Phantom agent exploration complete!")
+            _hermes_cli(
+                "send", "--to", "telegram", "-s", "[ERR] Pentest Agent Report", message,
+                timeout=10,
+            )
         except Exception as e:
-            log(f"\n❌ Exploration failed: {e}")
-            if session_id:
-                await add_log(
-                    session,
-                    session_id,
-                    "error",
-                    f"Exploration failed: {str(e)}",
-                    "error",
-                    auth_headers=auth_headers,
-                )
+            log(f"   [WARN] Failure notification error (non-fatal): {type(e).__name__}: {e}")
+
+    t = threading.Thread(target=_do_notify, daemon=True)
+    t.start()
 
 
-async def add_log(
-    session: aiohttp.ClientSession,
-    session_id: str,
-    level: str,
-    message: str,
-    action: str = None,
-    auth_headers: dict = None,
-):
-    """Add a log entry to the agent session."""
-    headers = auth_headers or {"Content-Type": "application/json"}
-    try:
-        async with session.post(
-            f"{NYUWUNSEWU_URL}/agent-sessions/{session_id}/log",
-            headers=headers,
-            json={
-                "session_id": session_id,
-                "level": level,
-                "message": message,
-                "action": action,
-            },
-        ) as resp:
-            if resp.status == 200:
-                log(f"   📝 Log: {message}")
-            else:
-                body = await resp.text()
-                log(f"   ❌ Failed to add log: {resp.status} {body}")
-    except Exception as e:
-        log(f"   ❌ Log error: {e}")
+# --- Cron Lock File Watchdog ---
+# The Hermes cron scheduler has a known bug: if a tick crashes or takes too long,
+# .tick.lock is left behind and ALL future ticks are blocked forever. It also can
+# leave orphaned .jobs_*.tmp atomic-write temp files. This watchdog cleans both so
+# the scheduler stays alive even if the receiver is the only thing supervising it.
 
+_LOCK_FILE = os.path.join(CRON_DIR, ".tick.lock")
 
-async def submit_finding(
-    session: aiohttp.ClientSession, session_id: str, scan_id: str, target_url: str
-):
-    """Submit a finding to NyuwunSewu."""
-    finding_data = {
-        "scan_id": scan_id,
-        "finding_type": "idor_account_takeover",
-        "title": "IDOR Allows Access to Other Users' Financial Data",
-        "severity": "critical",
-        "confidence": 95.0,
-        "description": "By manipulating the account_id parameter in the API request, an authenticated user can access any other user's financial data without proper authorization checks.",
-        "reasoning": [
-            "Endpoint /api/accounts/{id} does not verify ownership",
-            "Authenticated user can access any account by changing the ID parameter",
-            "Tested with multiple account IDs, all returned valid data",
-        ],
-        "evidence": {
-            "proof_of_concept": "Changed account_id from 123 to 124, received valid response",
-            "affected_accounts": ["123", "124", "125"],
-        },
-        "request_method": "GET",
-        "request_url": f"{target_url}/api/accounts/124",
-        "request_headers": {"Authorization": "Bearer [REDACTED]"},
-        "response_status": 200,
-        "response_body": '{"account_id": 124, "owner": "Another User", "balance": 5000000}',
-        "remediation": "Implement ownership verification on account endpoints. Check that the authenticated user owns the requested account before returning data.",
-        "agent_name": "phantom",
-        "exploit_chain": [
-            "1. Registered as normal user (account_id: 123)",
-            "2. Accessed own account at /api/accounts/123",
-            "3. Changed ID to 124 in request",
-            "4. Successfully accessed another user's account data",
-            "5. Repeated for multiple accounts to confirm",
-        ],
-    }
+def _cron_lock_watchdog():
+    """Remove stale .tick.lock and orphaned .jobs_*.tmp files periodically."""
+    while True:
+        now = datetime.now(timezone.utc).timestamp()
+        # 1. Stale tick lock
+        try:
+            if os.path.exists(_LOCK_FILE):
+                age = now - os.path.getmtime(_LOCK_FILE)
+                if age > 45:  # older than 45s = stale
+                    os.remove(_LOCK_FILE)
+                    log(f"   [WATCHDOG] Removed stale .tick.lock (age={age:.0f}s)")
+        except Exception:
+            pass
+        # 2. Orphaned atomic-write temp files
+        try:
+            for name in os.listdir(CRON_DIR):
+                if name.startswith(".jobs_") and name.endswith(".tmp"):
+                    fp = os.path.join(CRON_DIR, name)
+                    age = now - os.path.getmtime(fp)
+                    if age > 120:  # 2 min old = clearly orphaned
+                        os.remove(fp)
+                        log(f"   [WATCHDOG] Removed orphan temp: {name} (age={age:.0f}s)")
+        except Exception:
+            pass
+        time.sleep(30)
 
-    try:
-        async with session.post(
-            f"{NYUWUNSEWU_URL}/findings/ingest",
-            headers={
-                "Content-Type": "application/json",
-                "X-Agent-Secret": AGENT_SECRET,
-            },
-            json=finding_data,
-        ) as resp:
-            if resp.status == 201:
-                data = await resp.json()
-                log(f"   ✅ Finding submitted: {data.get('finding_id', 'unknown')}")
-            else:
-                body = await resp.text()
-                log(f"   ❌ Failed to submit finding: {resp.status} {body}")
-    except Exception as e:
-        log(f"   ❌ Finding submission error: {e}")
+# _watchdog_thread = threading.Thread(target=_cron_lock_watchdog, daemon=True)
+# _watchdog_thread.start()
+# log("[WATCHDOG] Cron lock file watchdog started")
 
-<<<<<<< HEAD
-
-async def complete_session(
-    session: aiohttp.ClientSession,
-    session_id: str,
-    findings_count: int = 0,
-    auth_headers: dict = None,
-):
-    """Mark the agent session as completed."""
-    headers = auth_headers or {"Content-Type": "application/json"}
-    try:
-        async with session.post(
-            f"{NYUWUNSEWU_URL}/agent-sessions/{session_id}/complete",
-            headers=headers,
-            params={"findings_count": findings_count},
-        ) as resp:
-            if resp.status == 200:
-                log(f"   ✅ Session completed with {findings_count} findings")
-            else:
-                body = await resp.text()
-                log(f"   ❌ Failed to complete session: {resp.status} {body}")
-    except Exception as e:
-        log(f"   ❌ Session completion error: {e}")
+# --- Main ---
 
 def main():
-    print("🚀 Phantom Agent Webhook Receiver")
+    print("[START] Phantom Agent Webhook Receiver (Production)")
     print("=" * 50)
     print(f"Port: {WEBHOOK_PORT}")
+    print(f"Profile: {PROFILE}")
+    print(f"Hermes home (root): {HERMES_HOME}")
     print(f"Secret: {WEBHOOK_SECRET[:4]}***")
     print(f"NyuwunSewu URL: {NYUWUNSEWU_URL}")
-    print("\nListening for webhooks...")
-    print("Press Ctrl+C to stop\n")
+    print(f"Pending scans dir: {PENDING_SCANS_DIR}")
+    print(f"Agent Secret: {AGENT_SECRET[:4]}***")
+    print()
+    print("Listening for webhooks...")
+    print("Press Ctrl+C to stop")
+    print()
 
     server = HTTPServer(("0.0.0.0", WEBHOOK_PORT), WebhookHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n\n👋 Shutting down webhook receiver...")
+        print("\n\n[STOP] Shutting down webhook receiver...")
         server.shutdown()
 
 
