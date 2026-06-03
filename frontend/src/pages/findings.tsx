@@ -151,7 +151,7 @@ function readableRequestUrl(evidence: FindingEvidenceResponse | null) {
 }
 
 export function FindingsPage() {
-  const { data, loading, error } = useApi(api.findings, []);
+  const { data, loading, error } = useApi(api.findings, [], "findings");
   const [query, setQuery] = useState("");
   const [severity, setSeverity] = useState("all");
   const [status, setStatus] = useState("all");

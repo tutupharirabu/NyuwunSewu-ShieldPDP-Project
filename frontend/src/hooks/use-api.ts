@@ -1,10 +1,28 @@
 import { useCallback, useEffect, useRef, useState, type DependencyList } from "react";
 
-export function useApi<T>(loader: () => Promise<T>, deps: DependencyList = []) {
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(true);
+// Module-level cache shared across mounts so revisiting a page can render
+// instantly from the last response while a fresh request revalidates in the
+// background (stale-while-revalidate).
+const apiCache = new Map<string, unknown>();
+
+export function clearApiCache(cacheKey?: string) {
+  if (cacheKey) apiCache.delete(cacheKey);
+  else apiCache.clear();
+}
+
+export function useApi<T>(
+  loader: () => Promise<T>,
+  deps: DependencyList = [],
+  cacheKey?: string,
+) {
+  const cached = cacheKey
+    ? (apiCache.get(cacheKey) as T | undefined)
+    : undefined;
+  const [data, setData] = useState<T | null>(cached ?? null);
+  // Skip the loading skeleton when we already have a cached value to show.
+  const [loading, setLoading] = useState(cached === undefined);
   const [error, setError] = useState<string | null>(null);
-  const loadedRef = useRef(false);
+  const loadedRef = useRef(cached !== undefined);
   const requestRef = useRef(0);
 
   const run = useCallback(async () => {
@@ -18,6 +36,7 @@ export function useApi<T>(loader: () => Promise<T>, deps: DependencyList = []) {
       if (requestId !== requestRef.current) return;
       setData(response);
       loadedRef.current = true;
+      if (cacheKey) apiCache.set(cacheKey, response);
     } catch (exc) {
       if (requestId !== requestRef.current) return;
       setError(exc instanceof Error ? exc.message : "Request failed");
@@ -26,6 +45,7 @@ export function useApi<T>(loader: () => Promise<T>, deps: DependencyList = []) {
         setLoading(false);
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
   useEffect(() => {

@@ -24,7 +24,7 @@ import { compactId, formatDate } from "@/lib/utils";
 
 export { TargetsPage as default };
 export function TargetsPage() {
-  const { data, loading, error } = useApi(api.targets, []);
+  const { data, loading, error } = useApi(api.targets, [], "targets");
 
   if (loading) return <Skeleton className="h-[520px]" />;
   if (error || !data)

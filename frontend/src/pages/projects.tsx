@@ -39,7 +39,7 @@ export function ProjectsPage() {
       api.auditLogs().catch(() => []),
     ]);
     return { projects, auditLogs };
-  }, []);
+  }, [], "projects-page");
 
   if (loading) return <Skeleton className="h-[520px]" />;
   if (error || !data)

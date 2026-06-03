@@ -1368,11 +1368,20 @@ export function DashboardPage() {
         focusEndpoints,
         focusScan,
       };
-    }, []);
+    }, [], "dashboard");
 
   useEffect(() => {
-    const timer = window.setInterval(() => void refresh(), 30000);
-    return () => window.clearInterval(timer);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void refresh();
+    }, 30000);
+    const onVisibility = () => {
+      if (!document.hidden) void refresh();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [refresh]);
 
   const activity = useMemo<ActivityItem[]>(() => {

@@ -31,8 +31,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Line, LineChart, ResponsiveContainer, Tooltip } from "recharts";
+import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -407,24 +406,39 @@ function Sparkline({ value, severity }: { value: number; severity: Severity }) {
     low: "#14b8a6",
     info: "#3b82f6",
   }[severity];
-  const rows = [0.74, 0.82, 0.7, 0.88, 0.93, 1].map((factor, index) => ({
-    step: index,
-    value: Math.max(0, Math.round(value * factor)),
-  }));
+  const points = [0.74, 0.82, 0.7, 0.88, 0.93, 1].map((factor) =>
+    Math.max(0, value * factor),
+  );
+  const width = 80;
+  const height = 36;
+  const max = Math.max(...points, 1);
+  const min = Math.min(...points);
+  const range = max - min || 1;
+  const step = width / (points.length - 1);
+  const path = points
+    .map((point, index) => {
+      const x = index * step;
+      const y = height - ((point - min) / range) * height;
+      return `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
   return (
     <div className="h-9 w-20" aria-hidden="true">
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={rows}>
-          <Line
-            type="monotone"
-            dataKey="value"
-            stroke={color}
-            strokeWidth={2}
-            dot={false}
-            isAnimationActive
-          />
-        </LineChart>
-      </ResponsiveContainer>
+      <svg
+        width="100%"
+        height="100%"
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
+      >
+        <path
+          d={path}
+          fill="none"
+          stroke={color}
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
     </div>
   );
 }
@@ -484,7 +498,7 @@ function SignalCard({
   );
 }
 
-function ComplianceGauge({
+function ComplianceGaugeImpl({
   score,
   findings,
 }: {
@@ -592,7 +606,7 @@ function ComplianceGauge({
   );
 }
 
-function ComplianceHeatmap({
+function ComplianceHeatmapImpl({
   rows,
   onSelect,
 }: {
@@ -692,7 +706,7 @@ function ComplianceHeatmap({
   );
 }
 
-function SensitiveDataPanel({ findings }: { findings: FindingResponse[] }) {
+function SensitiveDataPanelImpl({ findings }: { findings: FindingResponse[] }) {
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -753,7 +767,7 @@ function SensitiveDataPanel({ findings }: { findings: FindingResponse[] }) {
   );
 }
 
-function BreachReadiness({
+function BreachReadinessImpl({
   findings,
   auditLogs,
   reports,
@@ -817,7 +831,7 @@ function BreachReadiness({
   );
 }
 
-function ExposurePath({
+function ExposurePathImpl({
   findings,
   onSelect,
 }: {
@@ -918,7 +932,7 @@ function ExposurePath({
   );
 }
 
-function MappingMatrix({
+function MappingMatrixImpl({
   rows,
   onSelect,
 }: {
@@ -1007,7 +1021,7 @@ function MappingMatrix({
   );
 }
 
-function MitreContext({ findings }: { findings: FindingResponse[] }) {
+function MitreContextImpl({ findings }: { findings: FindingResponse[] }) {
   const mappings = [
     {
       tactic: "Initial Access",
@@ -1076,7 +1090,7 @@ function MitreContext({ findings }: { findings: FindingResponse[] }) {
   );
 }
 
-function WorkflowTimeline({
+function WorkflowTimelineImpl({
   remediations,
 }: {
   remediations: RemediationSummary[];
@@ -1150,7 +1164,7 @@ function WorkflowTimeline({
   );
 }
 
-function EvidenceCollection({
+function EvidenceCollectionImpl({
   findings,
   onSelect,
 }: {
@@ -1247,7 +1261,7 @@ function EvidenceCollection({
   );
 }
 
-function ExecutiveSummary({
+function ExecutiveSummaryImpl({
   findings,
   rows,
   remediations,
@@ -1850,13 +1864,27 @@ function ComplianceScopeHeader({
   );
 }
 
+// Memoized so opening the drawer/modal or switching selection state in
+// CompliancePage does not re-render these expensive panels when their data
+// props are unchanged.
+const ComplianceGauge = memo(ComplianceGaugeImpl);
+const ComplianceHeatmap = memo(ComplianceHeatmapImpl);
+const SensitiveDataPanel = memo(SensitiveDataPanelImpl);
+const BreachReadiness = memo(BreachReadinessImpl);
+const ExposurePath = memo(ExposurePathImpl);
+const MappingMatrix = memo(MappingMatrixImpl);
+const MitreContext = memo(MitreContextImpl);
+const WorkflowTimeline = memo(WorkflowTimelineImpl);
+const EvidenceCollection = memo(EvidenceCollectionImpl);
+const ExecutiveSummary = memo(ExecutiveSummaryImpl);
+
 export { CompliancePage as default };
 export function CompliancePage() {
   const {
     data: targets,
     loading: targetsLoading,
     error: targetsError,
-  } = useApi(api.targets, []);
+  } = useApi(api.targets, [], "targets");
   const [selectedTargetId, setSelectedTargetId] = useState("");
   const [selection, setSelection] = useState<Selection | null>(null);
   const [simulationOpen, setSimulationOpen] = useState(false);
@@ -1907,11 +1935,16 @@ export function CompliancePage() {
         auditLogs,
         reports,
       };
-    }, [selectedTargetId]);
+    }, [selectedTargetId], `compliance-${selectedTargetId}`);
 
   const rows = useMemo(
     () => mappingRows(data?.mappings ?? [], data?.findings ?? []),
     [data?.findings, data?.mappings],
+  );
+  const evidenceFindings = useMemo(
+    () =>
+      [...(data?.findings ?? [])].sort((a, b) => b.risk_score - a.risk_score),
+    [data?.findings],
   );
 
   if (targetsLoading) {
@@ -2109,12 +2142,7 @@ export function CompliancePage() {
 
       <WorkflowTimeline remediations={data.remediations} />
 
-      <EvidenceCollection
-        findings={[...data.findings].sort(
-          (a, b) => b.risk_score - a.risk_score,
-        )}
-        onSelect={setSelection}
-      />
+      <EvidenceCollection findings={evidenceFindings} onSelect={setSelection} />
 
       <Card>
         <CardContent className="flex flex-col justify-between gap-3 p-4 text-xs text-muted-foreground sm:flex-row sm:items-center">

@@ -35,7 +35,7 @@ export function ReportsPage() {
       api.scans(),
     ]);
     return { reports, projects, scans };
-  }, []);
+  }, [], "reports-page");
   const [projectId, setProjectId] = useState("");
   const [scanId, setScanId] = useState("");
   const [reportType, setReportType] = useState("Compliance Report");

@@ -63,7 +63,7 @@ export function ScanDetailPage() {
       api.findings(scanId),
     ]);
     return { scan, endpoints, findings };
-  }, [scanId]);
+  }, [scanId], `scan-detail-${scanId}`);
 
   const filteredEndpoints = useMemo(() => {
     const search = query.toLowerCase().trim();

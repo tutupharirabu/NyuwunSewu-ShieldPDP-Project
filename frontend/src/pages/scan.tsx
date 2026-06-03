@@ -36,7 +36,7 @@ const DEFAULT_ADMIN_PATHS =
 export { ScanPage as default };
 export function ScanPage() {
   const navigate = useNavigate();
-  const { data: projects, loading } = useApi(api.projects, []);
+  const { data: projects, loading } = useApi(api.projects, [], "projects");
   const [targetUrl, setTargetUrl] = useState("");
   const [projectId, setProjectId] = useState("");
   const [projectName, setProjectName] = useState(

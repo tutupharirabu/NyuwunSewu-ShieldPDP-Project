@@ -49,7 +49,7 @@ function effortBadge(effort: string) {
 }
 
 function RemediationMatrixView() {
-  const { data, loading, error } = useApi(api.remediationMatrix, []);
+  const { data, loading, error } = useApi(api.remediationMatrix, [], "remediation-matrix");
 
   if (loading) return <Skeleton className="h-[560px]" />;
   if (error || !data) {
@@ -196,7 +196,7 @@ function RemediationMatrixView() {
 }
 
 function RemediationKanbanView() {
-  const { data, loading, error, refresh } = useApi(api.remediations, []);
+  const { data, loading, error, refresh } = useApi(api.remediations, [], "remediations");
 
   if (loading) return <Skeleton className="h-[560px]" />;
   if (error || !data) {
