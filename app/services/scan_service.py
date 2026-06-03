@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import aiohttp
@@ -47,6 +48,8 @@ from app.validation.reflected_html import ReflectedHTMLInjectionValidator
 from app.validation.sqli import LightweightSQLiValidator
 from app.validation.types import ValidationResult
 from app.validation.username_enumeration import UsernameEnumerationValidator
+
+logger = logging.getLogger(__name__)
 
 
 class ScanService:
@@ -1359,6 +1362,7 @@ class ScanRunner:
                 else None,
             }
 
+            delivery_errors: list[str] = []
             for sub in subscriptions:
                 if event not in (sub.events or []):
                     continue
@@ -1371,7 +1375,55 @@ class ScanRunner:
                 )
                 sub.last_delivery_at = utcnow()
                 sub.last_delivery_status = status_code
+                # dispatch_webhook returns 0 on connection failure and the raw
+                # HTTP status otherwise. Anything outside 2xx is a failed
+                # delivery that must NOT be swallowed: log it and record it on
+                # the scan so a down/misconfigured receiver is visible.
+                if not 200 <= status_code < 300:
+                    detail = (
+                        f"HTTP {status_code}"
+                        if status_code
+                        else "no response (connection error/timeout)"
+                    )
+                    msg = f"{event} -> {sub.url}: {detail}"
+                    logger.warning("Webhook delivery failed: %s", msg)
+                    delivery_errors.append(msg)
+                else:
+                    logger.info(
+                        "Webhook delivered: %s -> %s (HTTP %s)",
+                        event,
+                        sub.url,
+                        status_code,
+                    )
+
+            if delivery_errors:
+                # Reassign (don't mutate in place): scan.stats is a plain JSON
+                # column without mutation tracking, so an in-place append would
+                # not be persisted.
+                stats = dict(scan.stats or {})
+                stats["_webhook_errors"] = (
+                    list(stats.get("_webhook_errors") or []) + delivery_errors
+                )
+                scan.stats = stats
             await self.session.commit()
         except Exception as exc:
-            scan.stats = scan.stats or {}
-            scan.stats.setdefault("_webhook_errors", []).append(f"{event}: {exc}")
+            logger.error(
+                "Webhook dispatch failed for scan %s (%s): %s",
+                scan.id,
+                event,
+                exc,
+                exc_info=True,
+            )
+            # Best-effort: persist the failure on the scan so it is visible,
+            # without letting a follow-on error crash scan completion.
+            try:
+                stats = dict(scan.stats or {})
+                stats["_webhook_errors"] = list(
+                    stats.get("_webhook_errors") or []
+                ) + [f"{event}: {exc}"]
+                scan.stats = stats
+                await self.session.commit()
+            except Exception:
+                logger.exception(
+                    "Failed to record webhook dispatch error on scan %s", scan.id
+                )

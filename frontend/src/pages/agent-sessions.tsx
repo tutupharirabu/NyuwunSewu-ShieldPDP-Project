@@ -95,9 +95,15 @@ export function AgentSessionsPage() {
     () => api.agentSessions() as Promise<AgentSession[]>,
     [],
   );
-  const [selectedSession, setSelectedSession] = useState<AgentSession | null>(null);
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(true);
   const [approvalNotes, setApprovalNotes] = useState("");
+
+  // Derive the selected session from live data so auto-refresh updates the
+  // detail panel (logs, pending_action) in place instead of showing a stale
+  // snapshot — and the approval card clears once the backend processes it.
+  const selectedSession =
+    sessions?.find((s) => s.id === selectedSessionId) ?? null;
 
   useEffect(() => {
     if (!autoRefresh) return;
@@ -136,10 +142,8 @@ export function AgentSessionsPage() {
   if (error) {
     return (
       <EmptyState
-        icon={XCircle}
         title="Failed to load agent sessions"
-        description={error.message}
-        action={<Button onClick={refresh}>Retry</Button>}
+        description={error ?? "Unable to load agent sessions."}
       />
     );
   }
@@ -181,7 +185,6 @@ export function AgentSessionsPage() {
         <CardContent>
           {sessions?.length === 0 ? (
             <EmptyState
-              icon={Bot}
               title="No agent sessions"
               description="Agent sessions will appear when scans complete and trigger the Phantom agent."
             />
@@ -209,7 +212,7 @@ export function AgentSessionsPage() {
                         "cursor-pointer hover:bg-muted/50",
                         selectedSession?.id === session.id && "bg-muted"
                       )}
-                      onClick={() => setSelectedSession(session)}
+                      onClick={() => setSelectedSessionId(session.id)}
                     >
                       <TableCell>
                         <div className="flex items-center gap-2">
@@ -255,7 +258,7 @@ export function AgentSessionsPage() {
                           size="sm"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setSelectedSession(session);
+                            setSelectedSessionId(session.id);
                           }}
                         >
                           <Eye className="h-4 w-4 mr-1" />

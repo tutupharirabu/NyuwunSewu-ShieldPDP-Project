@@ -242,3 +242,39 @@ export interface ScanStartPayload {
     modern_vuln_bank_probes: boolean;
   };
 }
+
+export interface AgentSessionLog {
+  timestamp: string;
+  level: string;
+  message: string;
+  action: string | null;
+  details: Record<string, unknown>;
+}
+
+export interface AgentSessionPendingAction {
+  action: string;
+  description: string;
+  risk_level: string;
+  request: Record<string, unknown>;
+  requested_at: string;
+}
+
+export interface AgentSessionResponse {
+  id: string;
+  agent_name: string;
+  target_url: string;
+  status: string;
+  current_action: string | null;
+  logs: AgentSessionLog[];
+  pending_action: AgentSessionPendingAction | null;
+  findings_count: number;
+  scan_id: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+export interface AgentApprovalPayload {
+  approved: boolean;
+  notes?: string;
+}

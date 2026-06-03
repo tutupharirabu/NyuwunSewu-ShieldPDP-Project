@@ -33,7 +33,10 @@ class AgentSessionResponse(BaseModel):
 
 
 class AgentLogSubmit(BaseModel):
-    session_id: str
+    # Optional: the log endpoints take session_id from the URL path. Keeping it
+    # required here 422s every agent log push (the agent only sends it in the
+    # path), so it is accepted in the body but ignored.
+    session_id: str | None = None
     level: str = "info"
     message: str
     action: str | None = None

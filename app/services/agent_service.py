@@ -22,9 +22,11 @@ async def create_agent_session(
     target_url: str,
     scan_id: str | None = None,
     agent_name: str = "phantom",
+    organization_id: str | None = None,
 ) -> AgentSession:
     """Create a new agent exploration session."""
     agent_session = AgentSession(
+        organization_id=organization_id,
         scan_id=scan_id,
         target_url=target_url,
         agent_name=agent_name,

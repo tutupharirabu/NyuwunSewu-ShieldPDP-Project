@@ -113,6 +113,7 @@ async def create_agent_session(
         target_url=payload.target_url,
         scan_id=payload.scan_id,
         agent_name=payload.agent_name,
+        organization_id=user.organization_id,
     )
 
 
@@ -252,12 +253,36 @@ async def ingest_agent_session(
             message="Session updated",
         )
     else:
-        # Create new session
+        # Resolve the owning organization STRICTLY from the scan so the session
+        # is scoped to the correct tenant and visible to that operator in the
+        # UI. We deliberately do NOT fall back to an arbitrary organization
+        # (e.g. Organization.limit(1)): the agent secret is a single shared
+        # secret, so attaching to a "default" org would let an agent write
+        # sessions into another tenant's view (cross-tenant IDOR).
+        if not payload.scan_id:
+            raise HTTPException(
+                status_code=400,
+                detail="scan_id is required to resolve the owning organization",
+            )
+
+        from app.models import Scan
+
+        scan_result = await session.execute(
+            select(Scan).where(Scan.id == payload.scan_id)
+        )
+        scan = scan_result.scalar_one_or_none()
+        if scan is None:
+            raise HTTPException(
+                status_code=404, detail=f"Scan {payload.scan_id} not found"
+            )
+
+        # Create new session, scoped to the scan's organization.
         new_session = await agent_service.create_agent_session(
             session,
             target_url=payload.target_url,
             scan_id=payload.scan_id,
             agent_name=payload.agent_name,
+            organization_id=scan.organization_id,
         )
 
         # Set initial status if provided
