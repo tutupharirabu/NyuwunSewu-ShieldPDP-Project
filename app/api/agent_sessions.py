@@ -23,6 +23,27 @@ from app.services import agent_service
 router = APIRouter(tags=["agent-sessions"])
 
 
+def _session_response(
+    s: AgentSession, findings_count: int
+) -> AgentSessionResponse:
+    """Build the API response, overriding findings_count with the value
+    computed from the findings table (see agent_service.agent_finding_counts)."""
+    return AgentSessionResponse(
+        id=s.id,
+        agent_name=s.agent_name,
+        target_url=s.target_url,
+        status=s.status,
+        current_action=s.current_action,
+        logs=s.logs or [],
+        pending_action=s.pending_action,
+        findings_count=findings_count,
+        scan_id=s.scan_id,
+        started_at=s.started_at,
+        completed_at=s.completed_at,
+        created_at=s.created_at,
+    )
+
+
 # --- Agent-auth helpers (mirrors findings ingest pattern) ---
 
 
@@ -75,7 +96,17 @@ async def list_agent_sessions(
 
     query = query.order_by(AgentSession.created_at.desc()).limit(limit)
     result = await session.execute(query)
-    return list(result.scalars().all())
+    rows = list(result.scalars().all())
+    counts = await agent_service.agent_finding_counts(
+        session, [row.scan_id for row in rows]
+    )
+    return [
+        _session_response(
+            row,
+            counts.get(row.scan_id, 0) if row.scan_id else (row.findings_count or 0),
+        )
+        for row in rows
+    ]
 
 
 @router.get("/agent-sessions/{session_id}", response_model=AgentSessionResponse)
@@ -94,7 +125,15 @@ async def get_agent_session(
     agent_session = result.scalar_one_or_none()
     if agent_session is None:
         raise HTTPException(status_code=404, detail="Agent session not found")
-    return agent_session
+    counts = await agent_service.agent_finding_counts(
+        session, [agent_session.scan_id]
+    )
+    findings_count = (
+        counts.get(agent_session.scan_id, 0)
+        if agent_session.scan_id
+        else (agent_session.findings_count or 0)
+    )
+    return _session_response(agent_session, findings_count)
 
 
 @router.post(

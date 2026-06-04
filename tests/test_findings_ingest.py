@@ -10,6 +10,7 @@ the same guard already enforced for ``/agent-sessions/ingest`` (see
 """
 
 import asyncio
+import uuid
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -20,6 +21,11 @@ from app.main import app
 from app.models import Finding, Policy, Project, Scan, Target, User
 
 AGENT_HEADERS = {"X-Agent-Secret": get_settings().secret_key}
+LOGIN_BODY = {
+    "email": "admin@nyuwunsewu.local",
+    "password": "ChangeMe123!",
+    "organization_slug": "default-organization",
+}
 
 FINDING_BODY = {
     "finding_type": "bola_idor",
@@ -42,7 +48,7 @@ async def _seed_scan() -> tuple[str, str]:
         project = Project(
             organization_id=admin.organization_id,
             owner_id=admin.id,
-            name="Findings Ingest Regression",
+            name=f"Findings Ingest Regression {uuid.uuid4()}",
         )
         session.add(project)
         await session.flush()
@@ -115,3 +121,100 @@ async def _load_finding(finding_id: str) -> Finding | None:
         return (
             await session.execute(select(Finding).where(Finding.id == finding_id))
         ).scalar_one_or_none()
+
+
+def _agent_session_in_listing(client: TestClient, session_id: str) -> dict:
+    login = client.post("/auth/login", json=LOGIN_BODY)
+    headers = {"authorization": f"Bearer {login.json()['access_token']}"}
+    listing = client.get("/agent-sessions", headers=headers)
+    assert listing.status_code == 200, listing.text
+    match = [s for s in listing.json() if s["id"] == session_id]
+    assert match, f"session {session_id} not found in listing"
+    return match[0]
+
+
+def test_session_findings_count_is_computed_from_ingested_findings():
+    """findings_count on a session must reflect the agent findings actually
+    ingested for its scan, derived at read time -- not a stale stored 0."""
+    with TestClient(app) as client:
+        scan_id, _ = asyncio.run(_seed_scan())
+
+        # Agent creates a session for the scan, then submits two findings.
+        created = client.post(
+            "/agent-sessions/ingest",
+            headers=AGENT_HEADERS,
+            json={"scan_id": scan_id, "target_url": "https://lab.example",
+                  "agent_name": "phantom", "status": "exploring"},
+        )
+        assert created.status_code == 201, created.text
+        session_id = created.json()["session_id"]
+
+        for i in range(2):
+            resp = client.post(
+                "/findings/ingest",
+                headers=AGENT_HEADERS,
+                json={**FINDING_BODY, "scan_id": scan_id, "title": f"Finding {i}"},
+            )
+            assert resp.status_code == 201, resp.text
+
+        session = _agent_session_in_listing(client, session_id)
+        assert session["findings_count"] == 2
+
+
+def test_agent_session_persists_all_log_entries():
+    """Every pushed log must persist. Regression against the JSON in-place
+    .append() in add_log_entry that SQLAlchemy can't track: previously only the
+    FIRST log survived, so multi-step exploration logs vanished from the DB even
+    though Telegram fired (idor_confirmed, findings_complete were lost)."""
+    with TestClient(app) as client:
+        scan_id, _ = asyncio.run(_seed_scan())
+        created = client.post(
+            "/agent-sessions/ingest",
+            headers=AGENT_HEADERS,
+            json={"scan_id": scan_id, "target_url": "https://lab.example",
+                  "agent_name": "phantom", "status": "exploring",
+                  "message": "Session started", "level": "info"},
+        )
+        assert created.status_code == 201, created.text
+        session_id = created.json()["session_id"]
+
+        for i in range(2):
+            r = client.post(
+                f"/agent-sessions/{session_id}/ingest-log",
+                headers=AGENT_HEADERS,
+                json={"level": "success", "message": f"step {i}", "action": f"act_{i}"},
+            )
+            assert r.status_code == 200, r.text
+
+        session = _agent_session_in_listing(client, session_id)
+        messages = [log["message"] for log in session["logs"]]
+        assert "Session started" in messages
+        assert "step 0" in messages
+        assert "step 1" in messages
+        assert len(session["logs"]) == 3
+
+
+def test_finding_ingest_appends_log_to_session():
+    """Ingesting a finding for a scan with a session must leave a per-finding
+    log entry on that session (visibility even when the agent is quiet)."""
+    with TestClient(app) as client:
+        scan_id, _ = asyncio.run(_seed_scan())
+        created = client.post(
+            "/agent-sessions/ingest",
+            headers=AGENT_HEADERS,
+            json={"scan_id": scan_id, "target_url": "https://lab.example",
+                  "agent_name": "phantom", "status": "exploring"},
+        )
+        session_id = created.json()["session_id"]
+
+        client.post(
+            "/findings/ingest",
+            headers=AGENT_HEADERS,
+            json={**FINDING_BODY, "scan_id": scan_id, "title": "IDOR on balance"},
+        )
+
+        session = _agent_session_in_listing(client, session_id)
+        actions = [log.get("action") for log in session["logs"]]
+        assert "finding_submitted" in actions
+        submitted = [log for log in session["logs"] if log.get("action") == "finding_submitted"]
+        assert any("IDOR on balance" in (log["message"] or "") for log in submitted)

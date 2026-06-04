@@ -1,4 +1,5 @@
 import hmac
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Header, status
 from sqlalchemy import select
@@ -16,6 +17,9 @@ from app.schemas.finding import (
     FindingResponse,
 )
 from app.schemas.webhook import AgentFindingIngest, AgentFindingResponse
+from app.services import agent_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["findings"])
 
@@ -211,6 +215,32 @@ async def ingest_agent_finding(
     session.add(finding)
     await session.commit()
     await session.refresh(finding)
+
+    # Link the submission to its agent session (same scan) so the session has a
+    # visible record of each finding, even when the agent pushes no step logs.
+    # The session's findings_count is computed from the findings table at read
+    # time, so we only append a log here -- best-effort, never fail the ingest.
+    try:
+        agent_session = await agent_service.find_session_for_scan(
+            session, scan_id, payload.agent_name or "phantom"
+        )
+        if agent_session is not None:
+            await agent_service.add_log_entry(
+                session,
+                session_id=agent_session.id,
+                level="info",
+                message=f"Finding submitted: {payload.title} ({severity})",
+                action="finding_submitted",
+                details={
+                    "finding_id": finding.id,
+                    "severity": severity,
+                    "finding_type": payload.finding_type,
+                },
+            )
+    except Exception:
+        logger.warning(
+            "Failed to log ingested finding to agent session", exc_info=True
+        )
 
     return AgentFindingResponse(
         finding_id=finding.id,

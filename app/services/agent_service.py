@@ -8,11 +8,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 import aiohttp
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models import AgentSession
+from app.models import AgentSession, Finding
 
 logger = logging.getLogger(__name__)
 
@@ -94,9 +94,13 @@ async def add_log_entry(
         "details": details or {},
     }
     
-    agent_session.logs = agent_session.logs or []
-    agent_session.logs.append(log_entry)
-    
+    # Reassign a NEW list rather than appending in place: ``logs`` is a plain
+    # JSON column without mutation tracking, so an in-place ``.append()`` is not
+    # flagged dirty and is silently dropped on commit (only the first log, which
+    # replaced an empty list, ever persisted). Same gotcha guarded in
+    # scan_service._dispatch_webhooks.
+    agent_session.logs = [*(agent_session.logs or []), log_entry]
+
     if action:
         agent_session.current_action = action
     
@@ -197,16 +201,24 @@ async def complete_session(
     if agent_session is None:
         return None
     
+    # Derive the real count from the findings table rather than trusting the
+    # caller's value: agents routinely call complete without a count (the
+    # endpoint default is 0), which used to overwrite the session to 0 even
+    # when findings were submitted. Fall back to the supplied value only when
+    # the scan has no agent findings yet.
+    counts = await agent_finding_counts(session, [agent_session.scan_id])
+    real_count = counts.get(agent_session.scan_id, findings_count)
+
     agent_session.status = "completed"
-    agent_session.findings_count = findings_count
+    agent_session.findings_count = real_count
     agent_session.completed_at = datetime.now(timezone.utc)
-    
+
     await session.commit()
     await session.refresh(agent_session)
-    
+
     await log_to_telegram(
         f"✅ Agent session completed: {session_id[:8]}\n"
-        f"Findings submitted: {findings_count}\n"
+        f"Findings submitted: {real_count}\n"
         f"Target: {agent_session.target_url}"
     )
     
@@ -266,3 +278,49 @@ async def list_active_sessions(
         .order_by(AgentSession.created_at.desc())
     )
     return list(result.scalars().all())
+
+
+async def agent_finding_counts(
+    session: AsyncSession,
+    scan_ids: list[str | None],
+) -> dict[str, int]:
+    """Map scan_id -> number of agent-submitted findings for that scan.
+
+    The session's findings_count is derived from the findings table at read
+    time (single source of truth) rather than a manually-reported column that
+    can drift or be overwritten to 0. Only agent-sourced findings are counted
+    (``evidence_summary.source == "agent"``), so the platform's own scanner
+    findings never inflate an agent session's count.
+    """
+    ids = [scan_id for scan_id in scan_ids if scan_id]
+    if not ids:
+        return {}
+    result = await session.execute(
+        select(Finding.scan_id, func.count(Finding.id))
+        .where(
+            Finding.scan_id.in_(ids),
+            Finding.evidence_summary["source"].as_string() == "agent",
+        )
+        .group_by(Finding.scan_id)
+    )
+    return {scan_id: count for scan_id, count in result.all()}
+
+
+async def find_session_for_scan(
+    session: AsyncSession,
+    scan_id: str | None,
+    agent_name: str = "phantom",
+) -> AgentSession | None:
+    """Return the most recent agent session for a scan + agent, if any."""
+    if not scan_id:
+        return None
+    result = await session.execute(
+        select(AgentSession)
+        .where(
+            AgentSession.scan_id == scan_id,
+            AgentSession.agent_name == agent_name,
+        )
+        .order_by(AgentSession.created_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
