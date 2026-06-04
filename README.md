@@ -10,30 +10,35 @@ Implemented production-oriented modules:
 
 - Async recon engine with bounded full-response reading, recursive crawling, operator-seeded entry paths, guest-then-authenticated session crawling, HTML form and browser-style JSON-token login support, standards discovery (`robots.txt`, sitemap, and OpenAPI locations), HTML/static resource extraction, JavaScript and JSON API route parsing, retries, deduplication, scope filtering, and connection pooling.
 - Passive technology inventory for server signatures, programming-language hints, application frameworks, and JSON API field names without storing field values.
+- Recon profiles for environment-specific crawling configuration.
 - Endpoint classification engine using heuristic scoring.
 - PII detection for email, JWT, API keys, access tokens, UUID, NIK, NPWP, bank account numbers, phone numbers, and customer identifiers.
 - Lightweight SQLi validation with bounded error, boolean, optional timing probes, and JavaScript JSON-login authentication-bypass confirmation.
 - Bounded path traversal validation for observed file/path-like inputs, requiring repeated operating-system file signatures before reporting.
 - Bounded reflected HTML injection validation with an inert markup canary, identifying XSS risk without executing JavaScript.
-- BOLA / IDOR validation with object ID mutation and authorization-context comparison.
+- BOLA / IDOR validation with object ID mutation and authorization-context comparison, including access matrix enforcement.
 - Auth validation for JWT structure and missing authorization checks.
+- CORS origin validation with controlled invalid-origin probes.
 - Safe API exposure validation for guest-visible structured financial/identity responses, client-side authentication-token storage patterns, and publicly advertised GraphQL introspection.
 - Bounded modern-auth validation for token cookie protection attributes, credential-free CORS origin reflection, limited invalid-password username enumeration comparison, and an invalid-signature JWT privilege negative control for operator-supplied non-admin sessions.
+- Data rights validation aligned with UU PDP obligations.
+- Discovery validation service for systematic endpoint and capability discovery.
 - Optional lab exploit-chain mode for authorized vulnerable apps. When `exploit_chains.enabled=true`, the scan can extract the authenticated JWT from Cookie or Authorization context, try claim manipulation execution against admin routes, enumerate configured username candidates with invalid passwords only, chain browser-accessible token storage with no-exfiltration XSS proof payloads, and probe known vuln-bank modern lab endpoints.
 - False positive reduction with baseline comparison, response diffing, timing consistency, soft 404 filtering, retry-aware confidence, and anomaly scoring.
-- Risk prioritization, UU PDP and OWASP ASVS compliance mapping, evidence hashing, per-finding HTTP request/response evidence, HTML/PDF reporting, RBAC, immutable audit logs, and remediation tracking.
+- Risk prioritization, UU PDP and OWASP ASVS compliance mapping, evidence hashing, per-finding HTTP request/response evidence, HTML/PDF reporting, RBAC, immutable audit logs, breach notification workflow, and remediation tracking.
 
 ## Architecture
 
-The codebase follows the requested modular structure:
+The codebase follows a modular structure:
 
 ```text
 app/
   api/             FastAPI routes and dependencies
   core/            settings, security, RBAC, bootstrap
-  recon/           async crawler and extraction engine
+  recon/           async recon engine
+  crawler/         async crawler and extraction engine
   classifier/      endpoint heuristic classifier
-  validation/      SQLi, BOLA/IDOR, auth, false-positive reduction
+  validation/      SQLi, BOLA/IDOR, auth, CORS, path traversal, reflected HTML, exploit chains, username enumeration, false-positive reduction, access matrix, API exposure, data rights
   pii_detection/   privacy exposure detector
   compliance/      UU PDP and OWASP ASVS mapper
   reporting/       HTML and minimal PDF report generation
@@ -42,11 +47,13 @@ app/
   dashboard/       dashboard aggregation service
   database/        async SQLAlchemy session
   middleware/      request context and security headers
-  services/        orchestration, policy, audit, risk, scope guard
+  services/        orchestration, policy, audit, risk, scope guard, agent service, webhook service, discovery validation, breach notification
   repositories/    tenant-scoped repository helpers
-  models/          SQLAlchemy models
+  models/          SQLAlchemy models (entities)
   schemas/         Pydantic API schemas
-worker/            Celery worker entrypoint
+  utils/           rate limiter, redaction utilities
+  templates/       Jinja2 HTML templates (dashboard, report)
+worker/            Celery worker entrypoint and tasks
 migrations/        Alembic migrations
 tests/             unit and integration tests
 ```
@@ -173,6 +180,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
 - `GET /scan/status?scan_id=...`
 - `GET /findings`
 - `GET /findings/{finding_id}/evidence`
+- `POST /findings/ingest`
 - `GET /reports`
 - `GET /reports/{report_id}`
 - `GET /reports/{report_id}/download`
@@ -188,6 +196,14 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
 - `GET /scans/{scan_id}/endpoints`
 - `GET /remediations`
 - `GET /audit-logs`
+- `GET /webhooks`
+- `POST /webhooks`
+- `GET /webhooks/{id}`
+- `PATCH /webhooks/{id}`
+- `DELETE /webhooks/{id}`
+- `GET /agent_sessions`
+- `GET /agent_sessions/{session_id}`
+- `POST /telegram/webhook`
 
 Example scan start:
 
@@ -237,6 +253,8 @@ Roles:
 
 Permissions cover scan creation, scan stopping, finding review, evidence access, report export, remediation approval/update, dashboard reads, findings reads, and compliance reads.
 
+RBAC is backed by `Organization`, `Role`, and `User` models with tenant-scoped repository helpers.
+
 ## Remediation Workflow
 
 Findings follow:
@@ -260,7 +278,26 @@ cd shieldpdp
 pytest
 ```
 
-The test suite covers classifier heuristics, PII detection, policy enforcement, false-positive reduction, validation helpers, and API bootstrap/login smoke behavior.
+The test suite covers:
+
+| Test File | Coverage |
+|---|---|
+| `test_classifier.py` | Endpoint classification heuristics |
+| `test_pii_detection.py` | PII pattern detection |
+| `test_policy_engine.py` | Policy enforcement and scope guarding |
+| `test_false_positive.py` | False-positive reduction logic |
+| `test_validation_helpers.py` | Validation utility functions |
+| `test_api_smoke.py` | API bootstrap and login smoke tests |
+| `test_api_exposure_validation.py` | API exposure and GraphQL checks |
+| `test_modern_validation.py` | Modern auth validation (CORS, JWT, username enumeration) |
+| `test_breach_notification.py` | Breach notification workflow |
+| `test_discovery_validation.py` | Discovery validation service |
+| `test_phase1_integration.py` | Phase 1 end-to-end integration |
+| `test_recon_profiles.py` | Recon profile configuration |
+| `test_agent_session_ingest.py` | Agent session ingestion |
+| `test_findings_ingest.py` | External agent finding ingestion |
+| `test_reporting.py` | Report generation |
+| `test_webhook_dispatch_failure.py` | Webhook dispatch and failure handling |
 
 ## External Agent Integration (Phantom)
 
@@ -326,7 +363,24 @@ curl -X POST http://localhost:8000/findings/ingest \
   }'
 ```
 
-### New API Endpoints
+### Telegram Integration
+
+NyuwunSewu supports Telegram commands for human-in-the-loop agent session approval:
+
+- `approve <session_prefix> [notes...]` — approve a pending agent action
+- `deny <session_prefix> [notes...]` — deny a pending agent action
+- `status` — list active agent sessions
+
+Configure `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` to enable.
+
+### Agent Session API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/agent_sessions` | List agent sessions |
+| `GET` | `/agent_sessions/{session_id}` | Get agent session details |
+
+### Webhook & Ingest API
 
 | Method | Path | Description |
 |--------|------|-------------|
