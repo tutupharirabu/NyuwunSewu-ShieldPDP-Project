@@ -1,17 +1,25 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
+  Ban,
   Bot,
+  Bug,
   CheckCircle,
   Clock,
   ExternalLink,
   Eye,
+  FileSearch,
+  FileText,
+  KeyRound,
+  Loader2,
   MessageSquare,
   Play,
   RefreshCw,
   Search,
+  Send,
   ShieldAlert,
   Terminal,
+  UserPlus,
   XCircle,
   type LucideIcon,
 } from "lucide-react";
@@ -77,6 +85,8 @@ const statusColors: Record<string, string> = {
   denied: "bg-red-500",
   completed: "bg-green-600",
   failed: "bg-red-600",
+  // Deliberate ethical halt — agent declined to continue, distinct from failed.
+  refused: "bg-red-600",
 };
 
 const statusIcons: Record<string, LucideIcon> = {
@@ -87,7 +97,71 @@ const statusIcons: Record<string, LucideIcon> = {
   denied: XCircle,
   completed: CheckCircle,
   failed: XCircle,
+  refused: ShieldAlert,
 };
+
+// Canonical agent action phases (mirror of backend AgentActionPhase). Maps each
+// phase value persisted in `current_action` to a uniform, descriptive label and
+// an icon so the "Current Action" column reads consistently regardless of the
+// free-text the agent originally emitted.
+const actionPhases: Record<string, { label: string; icon: LucideIcon }> = {
+  initializing: { label: "Initializing session", icon: Loader2 },
+  recon: { label: "Recon & endpoint mapping", icon: Search },
+  enumerating_accounts: {
+    label: "Registering / enumerating test accounts",
+    icon: UserPlus,
+  },
+  testing_idor: { label: "Testing IDOR / BOLA", icon: ShieldAlert },
+  testing_authz: {
+    label: "Testing authorization / privilege escalation",
+    icon: ShieldAlert,
+  },
+  testing_auth: {
+    label: "Testing authentication / session / JWT",
+    icon: KeyRound,
+  },
+  testing_injection: { label: "Testing injection (XSS / SQLi)", icon: Bug },
+  testing_info_disclosure: {
+    label: "Testing info disclosure / misconfig",
+    icon: FileSearch,
+  },
+  submitting_finding: { label: "Submitting confirmed finding", icon: Send },
+  awaiting_approval: { label: "Awaiting operator approval", icon: Clock },
+  summarizing: { label: "Summarizing results", icon: FileText },
+  completed: { label: "Exploration complete", icon: CheckCircle },
+  refused: { label: "Halted by non-offensive policy", icon: Ban },
+  failed: { label: "Exploration failed", icon: XCircle },
+  unknown: { label: "Working…", icon: Loader2 },
+};
+
+function titleCase(value: string): string {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+// Resolve a free-text action/details key to its friendly label, falling back to
+// a title-cased version of any unrecognized (legacy) string.
+function phaseLabel(value: string): string {
+  return actionPhases[value]?.label ?? titleCase(value);
+}
+
+function CurrentActionCell({ value }: { value: string | null }) {
+  if (!value) return <span className="text-muted-foreground">—</span>;
+  const phase = actionPhases[value];
+  const Icon = phase?.icon ?? Loader2;
+  return (
+    <span className="flex items-center gap-1.5 text-sm">
+      <Icon
+        className={cn(
+          "h-3.5 w-3.5 shrink-0 text-muted-foreground",
+          value === "unknown" && "animate-spin",
+        )}
+      />
+      <span className="truncate">{phase?.label ?? titleCase(value)}</span>
+    </span>
+  );
+}
 
 const logLevelColors: Record<string, string> = {
   info: "text-blue-600 dark:text-blue-300",
@@ -269,8 +343,8 @@ export function AgentSessionsPage() {
                           {session.status.replace(/_/g, " ")}
                         </Badge>
                       </TableCell>
-                      <TableCell className="max-w-xs truncate">
-                        {session.current_action || "—"}
+                      <TableCell className="max-w-xs">
+                        <CurrentActionCell value={session.current_action} />
                       </TableCell>
                       <TableCell>
                         <Badge variant="secondary">
@@ -391,29 +465,55 @@ export function AgentSessionsPage() {
                 {selectedSession.logs.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No logs yet</p>
                 ) : (
-                  selectedSession.logs.map((log, index) => (
-                    <div
-                      key={index}
-                      className="flex items-start gap-2 text-sm p-2 rounded hover:bg-muted"
-                    >
-                      <span className="text-xs text-muted-foreground whitespace-nowrap">
-                        {new Date(log.timestamp).toLocaleTimeString()}
-                      </span>
-                      <span
-                        className={
-                          logLevelColors[log.level] || logLevelColors.info
-                        }
+                  selectedSession.logs.map((log, index) => {
+                    const detailEntries = Object.entries(log.details ?? {});
+                    return (
+                      <div
+                        key={index}
+                        className="rounded p-2 text-sm hover:bg-muted"
                       >
-                        {logLevelIcons[log.level] || "📝"}
-                      </span>
-                      <span className="flex-1">{log.message}</span>
-                      {log.action && (
-                        <Badge variant="outline" className="text-xs">
-                          {log.action}
-                        </Badge>
-                      )}
-                    </div>
-                  ))
+                        <div className="flex items-start gap-2">
+                          <span className="text-xs text-muted-foreground whitespace-nowrap tabular-nums">
+                            {new Date(log.timestamp).toLocaleTimeString()}
+                          </span>
+                          <span
+                            className={
+                              logLevelColors[log.level] || logLevelColors.info
+                            }
+                          >
+                            {logLevelIcons[log.level] || "📝"}
+                          </span>
+                          <span className="flex-1 break-words">
+                            {log.message}
+                          </span>
+                          {log.action && (
+                            <Badge
+                              variant="outline"
+                              className="whitespace-nowrap text-xs"
+                            >
+                              {phaseLabel(log.action)}
+                            </Badge>
+                          )}
+                        </div>
+                        {detailEntries.length > 0 && (
+                          <div className="ml-[3.75rem] mt-1.5 grid gap-1 rounded border bg-background/60 p-2 font-mono text-xs">
+                            {detailEntries.map(([key, value]) => (
+                              <div key={key} className="flex gap-2">
+                                <span className="shrink-0 text-muted-foreground">
+                                  {titleCase(key)}:
+                                </span>
+                                <span className="break-all">
+                                  {typeof value === "string"
+                                    ? value
+                                    : JSON.stringify(value)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
                 )}
               </div>
             </div>

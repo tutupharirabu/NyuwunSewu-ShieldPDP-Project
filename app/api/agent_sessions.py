@@ -13,6 +13,7 @@ from app.core.config import get_settings
 from app.core.rbac import Permission
 from app.database.session import get_session
 from app.models import AgentSession, User
+from app.models.enums import AgentActionPhase, SessionStatus, normalize_action_phase
 from app.schemas.agent import (
     AgentApprovalRequest,
     AgentLogSubmit,
@@ -71,6 +72,10 @@ class AgentSessionIngest(BaseModel):
     agent_name: str = "phantom"
     status: str | None = None
     current_action: str | None = None
+    # Canonical phase (see AgentActionPhase). Preferred over the free-text
+    # current_action; the backend falls back to keyword-normalizing the free
+    # text when this is absent.
+    action_phase: str | None = None
     message: str | None = None
     level: str = "info"
     action: str | None = None
@@ -270,13 +275,27 @@ async def ingest_agent_session(
     existing = existing_result.scalar_one_or_none()
 
     if existing:
-        # Update existing session
-        if payload.status:
-            existing.status = payload.status
-        if payload.current_action:
-            existing.current_action = payload.current_action
+        # A refusal — signalled via status, action_phase, or free text — halts
+        # the session with the dedicated REFUSED status (an ethical halt, not a
+        # crash) and short-circuits the normal status/action update.
+        refused = (
+            payload.status == SessionStatus.REFUSED.value
+            or normalize_action_phase(
+                payload.action_phase, payload.current_action, payload.message
+            )
+            is AgentActionPhase.REFUSED
+        )
+        if refused:
+            await agent_service.mark_refused(session, existing.id, payload.message)
+            await session.refresh(existing)
+            return AgentSessionIngestResponse(
+                session_id=existing.id,
+                status=existing.status,
+                message="Session refused",
+            )
 
-        # Add log entry if message provided
+        # Log first so an explicit action_phase below wins over the phase the
+        # log message would otherwise infer for current_action.
         if payload.message:
             await agent_service.add_log_entry(
                 session,
@@ -285,6 +304,12 @@ async def ingest_agent_session(
                 message=payload.message,
                 action=payload.action,
             )
+        if payload.action_phase or payload.current_action:
+            existing.current_action = agent_service.resolve_current_action(
+                payload.action_phase, payload.current_action, payload.message
+            )
+        if payload.status:
+            existing.status = payload.status
 
         await session.commit()
         await session.refresh(existing)
@@ -327,9 +352,14 @@ async def ingest_agent_session(
             organization_id=scan.organization_id,
         )
 
-        # Set initial status if provided
+        # Set initial status / phase if provided
         if payload.status:
             new_session.status = payload.status
+        if payload.action_phase or payload.current_action:
+            new_session.current_action = agent_service.resolve_current_action(
+                payload.action_phase, payload.current_action, payload.message
+            )
+        if payload.status or payload.action_phase or payload.current_action:
             await session.commit()
             await session.refresh(new_session)
 

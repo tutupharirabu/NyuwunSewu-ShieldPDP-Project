@@ -13,6 +13,7 @@ Covers three bugs/risks that affected the Phantom pipeline:
 """
 
 import asyncio
+import uuid
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -31,7 +32,13 @@ LOGIN_BODY = {
 
 
 async def _seed_scan() -> str:
-    """Create a minimal real Scan and return its id."""
+    """Create a minimal real Scan and return its id.
+
+    The project name is suffixed with a unique token so multiple tests can each
+    seed their own scan without tripping the (organization_id, name) uniqueness
+    constraint on projects.
+    """
+    suffix = uuid.uuid4().hex[:8]
     async with AsyncSessionLocal() as session:
         admin = (
             await session.execute(
@@ -41,14 +48,14 @@ async def _seed_scan() -> str:
         project = Project(
             organization_id=admin.organization_id,
             owner_id=admin.id,
-            name="Agent Session Regression",
+            name=f"Agent Session Regression {suffix}",
         )
         session.add(project)
         await session.flush()
         policy = Policy(
             organization_id=admin.organization_id,
             project_id=project.id,
-            name="Agent Session Policy",
+            name=f"Agent Session Policy {suffix}",
         )
         target = Target(
             organization_id=admin.organization_id,
@@ -112,6 +119,127 @@ def test_agent_ingested_session_is_visible_to_operator_and_accepts_logs():
         )
         assert log_resp.status_code == 200, log_resp.text
         assert log_resp.json()["log_count"] >= 1
+
+
+def test_action_phase_normalized_into_current_action():
+    """The agent's action is stored as a canonical phase value so the UI shows
+    a uniform label — whether sent as an explicit ``action_phase`` enum or as
+    classifiable free text in ``current_action``."""
+    with TestClient(app) as client:
+        scan_id = asyncio.run(_seed_scan())
+        login = client.post("/auth/login", json=LOGIN_BODY)
+        headers = {"authorization": f"Bearer {login.json()['access_token']}"}
+
+        # Explicit enum is kept verbatim.
+        created = client.post(
+            "/agent-sessions/ingest",
+            headers=AGENT_HEADERS,
+            json={
+                "scan_id": scan_id,
+                "target_url": "https://lab.example",
+                "agent_name": "phantom",
+                "status": "exploring",
+                "action_phase": "testing_idor",
+                "message": "Replaying requests with swapped account IDs",
+                "level": "info",
+            },
+        )
+        assert created.status_code == 201, created.text
+        session_id = created.json()["session_id"]
+        detail = client.get(f"/agent-sessions/{session_id}", headers=headers)
+        assert detail.json()["current_action"] == "testing_idor"
+
+        # Free text with no explicit phase is keyword-normalized.
+        client.post(
+            "/agent-sessions/ingest",
+            headers=AGENT_HEADERS,
+            json={
+                "scan_id": scan_id,
+                "target_url": "https://lab.example",
+                "agent_name": "phantom",
+                "current_action": "Registering userA and userB test accounts",
+            },
+        )
+        detail = client.get(f"/agent-sessions/{session_id}", headers=headers)
+        assert detail.json()["current_action"] == "enumerating_accounts"
+
+
+def test_policy_refusal_marks_session_refused():
+    """A refusal — explicit status or free-text decline — halts the session with
+    the dedicated ``refused`` status (not ``failed``), stamps completed_at, and
+    records a warning the operator can read."""
+    with TestClient(app) as client:
+        scan_id = asyncio.run(_seed_scan())
+        login = client.post("/auth/login", json=LOGIN_BODY)
+        headers = {"authorization": f"Bearer {login.json()['access_token']}"}
+
+        created = client.post(
+            "/agent-sessions/ingest",
+            headers=AGENT_HEADERS,
+            json={
+                "scan_id": scan_id,
+                "target_url": "https://lab.example",
+                "agent_name": "phantom",
+                "status": "exploring",
+                "action_phase": "recon",
+            },
+        )
+        session_id = created.json()["session_id"]
+
+        refusal = client.post(
+            "/agent-sessions/ingest",
+            headers=AGENT_HEADERS,
+            json={
+                "scan_id": scan_id,
+                "target_url": "https://lab.example",
+                "agent_name": "phantom",
+                "status": "refused",
+                "action_phase": "refused",
+                "level": "warning",
+                "message": "Declining to flood the login endpoint per non-offensive policy.",
+            },
+        )
+        assert refusal.status_code == 201, refusal.text
+        assert refusal.json()["status"] == "refused"
+
+        detail = client.get(f"/agent-sessions/{session_id}", headers=headers).json()
+        assert detail["status"] == "refused"
+        assert detail["current_action"] == "refused"
+        assert detail["completed_at"] is not None
+        assert any(log["level"] == "warning" for log in detail["logs"])
+
+
+def test_freetext_refusal_in_log_flips_status_to_refused():
+    """Even without an explicit status, a strong refusal phrase pushed through
+    the log channel flips the session to ``refused``."""
+    with TestClient(app) as client:
+        scan_id = asyncio.run(_seed_scan())
+        login = client.post("/auth/login", json=LOGIN_BODY)
+        headers = {"authorization": f"Bearer {login.json()['access_token']}"}
+
+        created = client.post(
+            "/agent-sessions/ingest",
+            headers=AGENT_HEADERS,
+            json={
+                "scan_id": scan_id,
+                "target_url": "https://lab.example",
+                "agent_name": "phantom",
+                "status": "exploring",
+                "action_phase": "testing_auth",
+            },
+        )
+        session_id = created.json()["session_id"]
+
+        client.post(
+            f"/agent-sessions/{session_id}/ingest-log",
+            headers=AGENT_HEADERS,
+            json={
+                "level": "warning",
+                "message": "I will not proceed with credential brute-forcing.",
+            },
+        )
+        detail = client.get(f"/agent-sessions/{session_id}", headers=headers).json()
+        assert detail["status"] == "refused"
 
 
 def test_ingest_rejects_unresolvable_org_instead_of_arbitrary_fallback():

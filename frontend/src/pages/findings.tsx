@@ -195,6 +195,20 @@ function evidenceString(finding: FindingResponse, key: string) {
   return typeof value === "string" ? value : null;
 }
 
+// Pretty-print an evidence value that may be a JSON string or a plain object so
+// the enlarged agent evidence panel reads cleanly instead of as a single line.
+function prettyJson(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") {
+    try {
+      return JSON.stringify(JSON.parse(value), null, 2);
+    } catch {
+      return value;
+    }
+  }
+  return JSON.stringify(value, null, 2);
+}
+
 function readableRequestUrl(evidence: FindingEvidenceResponse | null) {
   if (!evidence) return null;
   const url = String(evidence.raw_request.url ?? "");
@@ -313,6 +327,16 @@ export function FindingsPage() {
   const injectionLocation = selected
     ? evidenceString(selected, "injection_location")
     : null;
+  // Phantom and other agent-sourced findings carry their proof in the
+  // evidence_summary `evidence`/`reasoning` fields. For those we drop the
+  // duplicated request/response from Validation Detail and enlarge the
+  // evidence + reasoning into a dedicated full-width section below the grid.
+  const isAgentFinding = selected
+    ? evidenceString(selected, "source") === "agent"
+    : false;
+  const agentEvidence = selected
+    ? selected.evidence_summary["evidence"]
+    : undefined;
 
   if (loading) {
     return <Skeleton className="h-[540px]" />;
@@ -610,15 +634,23 @@ export function FindingsPage() {
                     </div>
                   )}
                   {Object.entries(selected.evidence_summary)
-                    .filter(
-                      ([key]) =>
-                        !key.startsWith("evidence_") &&
-                        ![
+                    .filter(([key]) => {
+                      if (key.startsWith("evidence_")) return false;
+                      // request/response duplicate the Raw HTTP panels.
+                      if (
+                        [
                           "payload",
                           "injected_parameter",
                           "injection_location",
-                        ].includes(key),
-                    )
+                          "request",
+                          "response",
+                        ].includes(key)
+                      )
+                        return false;
+                      // evidence is shown enlarged below for agent findings.
+                      if (isAgentFinding && key === "evidence") return false;
+                      return true;
+                    })
                     .slice(0, 6)
                     .map(([key, value]) => (
                       <div key={key} className="mt-3">
@@ -633,14 +665,16 @@ export function FindingsPage() {
                       </div>
                     ))}
                 </div>
-                <div className="rounded-md border p-3">
-                  <p className="text-xs text-muted-foreground">Reasoning</p>
-                  <div className="mt-2 space-y-2 text-xs">
-                    {selected.reasoning.map((item) => (
-                      <p key={item}>{item}</p>
-                    ))}
+                {!isAgentFinding && (
+                  <div className="rounded-md border p-3">
+                    <p className="text-xs text-muted-foreground">Reasoning</p>
+                    <div className="mt-2 space-y-2 text-xs">
+                      {selected.reasoning.map((item) => (
+                        <p key={item}>{item}</p>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
               <div className="space-y-3">
                 <p className="text-sm font-medium">Raw HTTP Request</p>
@@ -671,6 +705,30 @@ export function FindingsPage() {
                 )}
               </div>
             </div>
+            {isAgentFinding && (
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div className="rounded-md border p-4">
+                  <p className="text-sm font-medium">Evidence</p>
+                  <pre className="mt-3 max-h-[420px] overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/40 p-4 font-mono text-sm leading-relaxed text-foreground">
+                    {prettyJson(agentEvidence) || "No evidence recorded."}
+                  </pre>
+                </div>
+                <div className="rounded-md border p-4">
+                  <p className="text-sm font-medium">Reasoning</p>
+                  <ol className="mt-3 space-y-3 text-sm leading-relaxed">
+                    {selected.reasoning.length ? (
+                      selected.reasoning.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))
+                    ) : (
+                      <li className="text-muted-foreground">
+                        No reasoning recorded.
+                      </li>
+                    )}
+                  </ol>
+                </div>
+              </div>
+            )}
             {evidence && (
               <div className="flex flex-wrap gap-3 rounded-md border p-3 font-mono text-xs text-muted-foreground">
                 <span>Evidence ID: {evidence.immutable_id}</span>

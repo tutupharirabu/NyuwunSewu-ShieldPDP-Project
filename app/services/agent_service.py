@@ -13,8 +13,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models import AgentSession, Finding
+from app.models.enums import AgentActionPhase, SessionStatus, normalize_action_phase
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_current_action(
+    explicit_phase: str | None,
+    *texts: str | None,
+) -> str:
+    """Map agent input onto a canonical phase value for ``current_action``.
+
+    Returns the enum value (e.g. ``"testing_idor"``) when classifiable; when the
+    agent's free-text can't be classified, the first non-empty raw text is kept
+    so the operator still sees something meaningful instead of ``"unknown"``.
+    """
+    phase = normalize_action_phase(explicit_phase, *texts)
+    if phase is not AgentActionPhase.UNKNOWN:
+        return phase.value
+    for text in (explicit_phase, *texts):
+        if text:
+            return text
+    return AgentActionPhase.UNKNOWN.value
 
 
 async def create_agent_session(
@@ -101,9 +121,20 @@ async def add_log_entry(
     # scan_service._dispatch_webhooks.
     agent_session.logs = [*(agent_session.logs or []), log_entry]
 
-    if action:
-        agent_session.current_action = action
-    
+    # Drive the uniform "Current Action" column from the canonical phase while
+    # leaving the log entry's raw ``action`` badge intact for granular detail.
+    # A refusal signalled through any channel (log message or action) halts the
+    # session with the dedicated REFUSED status, distinct from a crash.
+    phase = normalize_action_phase(action, message)
+    if phase is AgentActionPhase.REFUSED:
+        agent_session.status = SessionStatus.REFUSED.value
+        agent_session.current_action = AgentActionPhase.REFUSED.value
+        agent_session.pending_action = None
+        if agent_session.completed_at is None:
+            agent_session.completed_at = datetime.now(timezone.utc)
+    elif action:
+        agent_session.current_action = resolve_current_action(None, action, message)
+
     await session.commit()
     await session.refresh(agent_session)
     
@@ -222,6 +253,41 @@ async def complete_session(
         f"Target: {agent_session.target_url}"
     )
     
+    return agent_session
+
+
+async def mark_refused(
+    session: AsyncSession,
+    session_id: str,
+    reason: str | None = None,
+) -> AgentSession | None:
+    """Mark a session as refused: the agent declined to continue because an
+    action collided with its non-offensive policy / rules of engagement.
+
+    Distinct from ``failed`` (a technical error) so the operator can tell a
+    deliberate ethical halt apart from a crash.
+    """
+    result = await session.execute(
+        select(AgentSession).where(AgentSession.id == session_id)
+    )
+    agent_session = result.scalar_one_or_none()
+    if agent_session is None:
+        return None
+
+    agent_session.status = SessionStatus.REFUSED.value
+    agent_session.current_action = AgentActionPhase.REFUSED.value
+    agent_session.pending_action = None
+    agent_session.completed_at = datetime.now(timezone.utc)
+    await session.commit()
+
+    await add_log_entry(
+        session,
+        session_id,
+        "warning",
+        reason or "Agent declined to continue: action blocked by non-offensive policy.",
+        details={"halt_reason": "non_offensive_policy"},
+    )
+    await session.refresh(agent_session)
     return agent_session
 
 

@@ -216,27 +216,45 @@ Your AgentSession ID: {session_id}
 Update your session state via the backend API so the operator can track progress.
 Use these endpoints (auth: X-Agent-Secret header = {AGENT_SECRET}):
 
+ALWAYS send an `action_phase` (canonical enum) on every update so the operator's
+dashboard shows a uniform, descriptive status. Valid action_phase values:
+  initializing, recon, enumerating_accounts, testing_idor, testing_authz,
+  testing_auth, testing_injection, testing_info_disclosure, submitting_finding,
+  awaiting_approval, summarizing, completed, refused, failed.
+Pick the one matching what you are doing RIGHT NOW (e.g. testing_idor while
+replaying swapped IDs, enumerating_accounts while registering userA/userB).
+
 - Update status to "exploring" when you start:
   curl -X POST {NYUWUNSEWU_URL}/agent-sessions/ingest \\
     -H "Content-Type: application/json" -H "X-Agent-Secret: {AGENT_SECRET}" \\
-    -d '{{"scan_id": "{scan_id}", "target_url": "{target_url}", "agent_name": "phantom", "status": "exploring", "current_action": "Starting exploration", "message": "Agent started, beginning validation", "level": "info"}}'
+    -d '{{"scan_id": "{scan_id}", "target_url": "{target_url}", "agent_name": "phantom", "status": "exploring", "action_phase": "recon", "message": "Agent started, beginning validation", "level": "info"}}'
 
-- Push log entries for key milestones:
+- Push log entries for key milestones (include `action_phase`, and a `details`
+  object for any structured context — it is shown verbatim to the operator):
   curl -X POST {NYUWUNSEWU_URL}/agent-sessions/{session_id}/ingest-log \\
     -H "Content-Type: application/json" -H "X-Agent-Secret: {AGENT_SECRET}" \\
-    -d '{{"level": "info", "message": "Completed IDOR check on /api/accounts", "action": "idor_check"}}'
+    -d '{{"level": "info", "message": "Completed IDOR check on /api/accounts", "action": "testing_idor", "details": {{"endpoint": "/api/accounts", "result": "no cross-account read"}}}}'
   Levels: info, warning, error, success.
 
 - Increment findings_count when you submit a finding (call the ingest endpoint
-  with status="exploring", current_action describing what you just tested).
+  with status="exploring", action_phase="submitting_finding").
 
 - When ALL done, mark session complete:
   curl -X POST {NYUWUNSEWU_URL}/agent-sessions/{session_id}/ingest-complete \\
     -H "X-Agent-Secret: {AGENT_SECRET}" \\
     -d 'findings_count=<number_of_findings_submitted>'
 
+- REFUSAL: if at any point you decline to continue because an action would
+  collide with your non-offensive policy / rules of engagement, do NOT silently
+  stop. Report it explicitly so the session is marked "refused" (an ethical
+  halt, distinct from a crash) with the reason visible to the operator:
+  curl -X POST {NYUWUNSEWU_URL}/agent-sessions/ingest \\
+    -H "Content-Type: application/json" -H "X-Agent-Secret: {AGENT_SECRET}" \\
+    -d '{{"scan_id": "{scan_id}", "target_url": "{target_url}", "agent_name": "phantom", "status": "refused", "action_phase": "refused", "level": "warning", "message": "<one-line reason you are declining to proceed>"}}'
+
 Do this at key milestones: start (status=exploring), each finding confirmed,
-and at the very end (status=completed)."""
+the very end (status=completed), and immediately on any policy refusal
+(status=refused)."""
 
     prompt = f"""PHANTOM ENGAGEMENT - Authorized Web App Pentest (Learning Lab)
 
