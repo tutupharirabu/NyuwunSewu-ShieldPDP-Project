@@ -7,20 +7,21 @@ from app.api.router import api_router
 from app.core.bootstrap import mark_interrupted_scans, seed_defaults
 from app.core.config import get_settings
 from app.database.base import Base
-from app.database.session import AsyncSessionLocal, engine
+from app.database.session import get_engine, get_sessionmaker
 from app import models  # noqa: F401
 from app.middleware.request_context import RequestContextMiddleware
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    session_factory = get_sessionmaker()
     if get_settings().database_url.startswith("sqlite"):
-        async with engine.begin() as connection:
+        async with get_engine().begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
-    async with AsyncSessionLocal() as session:
+    async with session_factory() as session:
         await seed_defaults(session)
     if not get_settings().use_celery:
-        async with AsyncSessionLocal() as session:
+        async with session_factory() as session:
             await mark_interrupted_scans(session)
     yield
 

@@ -7,7 +7,6 @@ from app.api.deps import current_ip, require_permission
 from app.core.rbac import Permission
 from app.database.session import get_session
 from app.models import User, WebhookSubscription
-from app.repositories.domain import DomainRepository
 from app.schemas.webhook import WebhookCreate, WebhookResponse, WebhookUpdate
 
 router = APIRouter(tags=["webhooks"])
@@ -56,7 +55,6 @@ async def get_webhook(
     user: User = Depends(require_permission(Permission.READ_DASHBOARD)),
     session: AsyncSession = Depends(get_session),
 ) -> WebhookSubscription:
-    repo = DomainRepository(session)
     result = await session.execute(
         select(WebhookSubscription).where(
             WebhookSubscription.id == webhook_id,

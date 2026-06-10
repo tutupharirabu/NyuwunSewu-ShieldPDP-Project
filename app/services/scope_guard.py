@@ -21,10 +21,29 @@ class ScopeGuard:
         self.base_url = self.normalize_url(base_url)
         self.base_host = urlparse(self.base_url).hostname or ""
         self.allowed_domains = {
-            domain.lower().lstrip(".") for domain in policy.scoped_domains(allowed_domains or [self.base_host])
+            host
+            for domain in policy.scoped_domains(allowed_domains or [self.base_host])
+            if (host := self.normalize_domain(domain))
         }
         self.policy = policy
         self.settings = get_settings()
+
+    @staticmethod
+    def normalize_domain(entry: str) -> str:
+        """Reduce a scope entry to a bare hostname.
+
+        Accepts full URLs (``https://host/path``), host:port, leading-dot
+        wildcards, or bare hosts, and always returns the lowercased hostname
+        so scope matching never breaks on a stray scheme or path.
+        """
+        entry = (entry or "").strip().lower()
+        if not entry:
+            return ""
+        # urlparse needs a scheme to populate .hostname; add one for bare hosts.
+        if "://" not in entry:
+            entry = "//" + entry
+        host = urlparse(entry).hostname or ""
+        return host.strip(".")
 
     @staticmethod
     def normalize_url(url: str, base_url: str | None = None) -> str:
@@ -33,14 +52,19 @@ class ScopeGuard:
         scheme = parsed.scheme.lower()
         netloc = parsed.netloc.lower()
         path = parsed.path or "/"
-        normalized = parsed._replace(scheme=scheme, netloc=netloc, path=path, fragment="")
+        normalized = parsed._replace(
+            scheme=scheme, netloc=netloc, path=path, fragment=""
+        )
         return urlunparse(normalized)
 
     def host_in_scope(self, host: str | None) -> bool:
         if not host:
             return False
         host = host.lower().rstrip(".")
-        return any(host == domain or host.endswith("." + domain) for domain in self.allowed_domains)
+        return any(
+            host == domain or host.endswith("." + domain)
+            for domain in self.allowed_domains
+        )
 
     async def _resolves_to_blocked_ip(self, host: str) -> bool:
         if self.settings.allow_private_targets:
@@ -73,7 +97,9 @@ class ScopeGuard:
         normalized = self.normalize_url(url, self.base_url)
         parsed = urlparse(normalized)
         if parsed.scheme not in {"http", "https"}:
-            return ScopeDecision(False, "URL scheme is not http or https", normalized, parsed.hostname)
+            return ScopeDecision(
+                False, "URL scheme is not http or https", normalized, parsed.hostname
+            )
         if not self.host_in_scope(parsed.hostname):
             return ScopeDecision(
                 False,
@@ -82,7 +108,12 @@ class ScopeGuard:
                 parsed.hostname,
             )
         if self.policy.is_path_excluded(normalized):
-            return ScopeDecision(False, "Path is excluded or forbidden by scan policy", normalized, parsed.hostname)
+            return ScopeDecision(
+                False,
+                "Path is excluded or forbidden by scan policy",
+                normalized,
+                parsed.hostname,
+            )
         if await self._resolves_to_blocked_ip(parsed.hostname or ""):
             return ScopeDecision(
                 False,

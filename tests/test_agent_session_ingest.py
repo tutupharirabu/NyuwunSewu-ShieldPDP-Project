@@ -22,7 +22,7 @@ from app.database.session import AsyncSessionLocal
 from app.main import app
 from app.models import Policy, Project, Scan, Target, User
 
-AGENT_HEADERS = {"X-Agent-Secret": get_settings().secret_key}
+AGENT_HEADERS = {"X-Agent-Secret": get_settings().agent_secret}
 LOGIN_BODY = {
     "email": "admin@nyuwunsewu.local",
     "password": "ChangeMe123!",
@@ -34,7 +34,9 @@ async def _seed_scan() -> str:
     """Create a minimal real Scan and return its id."""
     async with AsyncSessionLocal() as session:
         admin = (
-            await session.execute(select(User).where(User.email == "admin@nyuwunsewu.local"))
+            await session.execute(
+                select(User).where(User.email == "admin@nyuwunsewu.local")
+            )
         ).scalar_one()
         project = Project(
             organization_id=admin.organization_id,
@@ -102,7 +104,11 @@ def test_agent_ingested_session_is_visible_to_operator_and_accepts_logs():
         log_resp = client.post(
             f"/agent-sessions/{session_id}/ingest-log",
             headers=AGENT_HEADERS,
-            json={"level": "info", "message": "Completed IDOR check", "action": "idor_check"},
+            json={
+                "level": "info",
+                "message": "Completed IDOR check",
+                "action": "idor_check",
+            },
         )
         assert log_resp.status_code == 200, log_resp.text
         assert log_resp.json()["log_count"] >= 1

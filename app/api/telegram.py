@@ -1,5 +1,8 @@
 """Telegram webhook handler for inbound commands (approve/deny agent actions)."""
+
+import html
 import logging
+
 from fastapi import APIRouter, Request
 
 from app.core.config import get_settings
@@ -14,7 +17,7 @@ router = APIRouter(tags=["telegram"])
 @router.post("/telegram/webhook")
 async def telegram_webhook(request: Request) -> dict:
     """Handle incoming Telegram messages.
-    
+
     Supports commands:
       - approve <session_prefix> [notes...]
       - deny <session_prefix> [notes...]
@@ -56,8 +59,8 @@ async def telegram_webhook(request: Request) -> dict:
             if result is None:
                 # Reply: session not found
                 await _send_telegram_message(
-                    f"❌ Session `{session_prefix}` not found.\n"
-                    f"Use: {command} <session_id_prefix> [notes]",
+                    f"❌ Session <code>{html.escape(session_prefix)}</code> not found.\n"
+                    f"Use: {command} &lt;session_id_prefix&gt; [notes]",
                     chat_id=chat_id,
                 )
                 return {"ok": True, "action": "not_found"}
@@ -67,12 +70,16 @@ async def telegram_webhook(request: Request) -> dict:
             )
             if approval_result:
                 status_emoji = "✅ Approved" if approved else "❌ Denied"
-                action_name = approval_result.pending_action.get("action", "unknown") if approval_result.pending_action else "N/A"
+                action_name = (
+                    approval_result.pending_action.get("action", "unknown")
+                    if approval_result.pending_action
+                    else "N/A"
+                )
                 await _send_telegram_message(
                     f"{status_emoji}\n"
                     f"Session: {result.id[:8]}\n"
-                    f"Action: {action_name}\n"
-                    f"Notes: {notes or '(none)'}",
+                    f"Action: {html.escape(str(action_name))}\n"
+                    f"Notes: {html.escape(notes) if notes else '(none)'}",
                     chat_id=chat_id,
                 )
             break
@@ -86,11 +93,20 @@ async def telegram_webhook(request: Request) -> dict:
             if sessions:
                 lines = [f"🤖 Active Sessions ({len(sessions)}):"]
                 for s in sessions:
-                    status_emoji = {"exploring": "🔍", "pending_approval": "🔒", "idle": "⏳"}.get(s.status, "📋")
-                    lines.append(f"  {status_emoji} {s.id[:8]} — {s.status} — {s.target_url[:50]}")
+                    status_emoji = {
+                        "exploring": "🔍",
+                        "pending_approval": "🔒",
+                        "idle": "⏳",
+                    }.get(s.status, "📋")
+                    lines.append(
+                        f"  {status_emoji} {s.id[:8]} — {html.escape(s.status)} "
+                        f"— {html.escape((s.target_url or '')[:50])}"
+                    )
                 await _send_telegram_message("\n".join(lines), chat_id=chat_id)
             else:
-                await _send_telegram_message("📋 No active agent sessions.", chat_id=chat_id)
+                await _send_telegram_message(
+                    "📋 No active agent sessions.", chat_id=chat_id
+                )
             break
 
         return {"ok": True, "action": "status"}
@@ -111,7 +127,7 @@ async def _send_telegram_message(text: str, chat_id: int) -> None:
     payload = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "MarkdownV2",
+        "parse_mode": "HTML",
     }
 
     try:

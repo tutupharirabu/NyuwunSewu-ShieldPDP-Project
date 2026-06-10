@@ -41,8 +41,12 @@ class Settings(BaseSettings):
     cors_origins: list[str | AnyHttpUrl] = ["http://localhost:8000"]
 
     # Telegram integration for agent notifications
-    telegram_bot_token: str | None = Field(None, description="Telegram bot token for agent notifications")
-    telegram_chat_id: str | None = Field(None, description="Telegram chat ID for agent notifications")
+    telegram_bot_token: str | None = Field(
+        None, description="Telegram bot token for agent notifications"
+    )
+    telegram_chat_id: str | None = Field(
+        None, description="Telegram chat ID for agent notifications"
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -65,11 +69,19 @@ class Settings(BaseSettings):
             normalized = value.strip().lower()
             if normalized in {"1", "true", "yes", "on", "debug", "dev", "development"}:
                 return True
-            if normalized in {"0", "false", "no", "off", "release", "prod", "production"}:
+            if normalized in {
+                "0",
+                "false",
+                "no",
+                "off",
+                "release",
+                "prod",
+                "production",
+            }:
                 return False
         return bool(value)
 
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return Settings()  # type: ignore[call-arg]  # pydantic-settings reads from env/file

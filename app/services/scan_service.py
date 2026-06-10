@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import asdict
 from typing import Any
 
 import aiohttp
@@ -12,7 +13,7 @@ from app.classifier import EndpointClassifier
 from app.compliance.engine import ComplianceMappingEngine
 from app.core.config import get_settings
 from app.core.security import utcnow
-from app.database.session import AsyncSessionLocal
+from app.database.session import get_sessionmaker
 from app.evidence.engine import EvidenceEngine
 from app.models import (
     ComplianceMapping,
@@ -22,7 +23,6 @@ from app.models import (
     Policy,
     Project,
     RemediationTracking,
-    Report,
     Scan,
     ScanStatus,
     Target,
@@ -50,181 +50,23 @@ from app.validation.types import ValidationResult
 from app.validation.username_enumeration import UsernameEnumerationValidator
 
 logger = logging.getLogger(__name__)
+from app.services.scan_crud import ScanService
+from app.services.scan_reporting import _ReportingMixin
+from app.services.scan_scoring import _ScoringMixin
 
-
-class ScanService:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-        self.audit = AuditService(session)
-
-    async def create_scan(
-        self,
-        *,
-        user: User,
-        target_url: str,
-        project_name: str | None,
-        project_id: str | None,
-        policy_payload: dict[str, Any] | None,
-        allowed_domains: list[str] | None,
-        ip_address: str | None,
-    ) -> Scan:
-        if not user.organization_id:
-            raise ValueError("User must belong to an organization to start scans")
-        project = await self._resolve_project(user, project_id, project_name)
-        target = await self._resolve_target(
-            user.organization_id, project.id, target_url, allowed_domains
-        )
-        policy = await self._create_policy(
-            user.organization_id, project.id, policy_payload
-        )
-
-        scan = Scan(
-            organization_id=user.organization_id,
-            project_id=project.id,
-            target_id=target.id,
-            policy_id=policy.id,
-            started_by_id=user.id,
-            status=ScanStatus.QUEUED.value,
-            stats={
-                "phase": "Queued",
-                "progress_percentage": 0,
-                "message": "Queued for validation",
-                "coverage_status": "queued",
-                "endpoints_discovered": 0,
-                "parameters_discovered": 0,
-                "findings_discovered": 0,
-            },
-        )
-        self.session.add(scan)
-        await self.session.flush()
-        await self.audit.log(
-            action="scan.start",
-            resource_type="scan",
-            resource_id=scan.id,
-            user=user,
-            ip_address=ip_address,
-            metadata={"target": target.base_url, "project_id": project.id},
-        )
-        await self.session.commit()
-        return scan
-
-    async def request_stop(
-        self, *, scan: Scan, user: User, ip_address: str | None
-    ) -> Scan:
-        scan.stop_requested = True
-        scan.status = ScanStatus.STOPPING.value
-        await self.audit.log(
-            action="scan.stop",
-            resource_type="scan",
-            resource_id=scan.id,
-            user=user,
-            ip_address=ip_address,
-        )
-        await self.session.commit()
-        return scan
-
-    async def _resolve_project(
-        self, user: User, project_id: str | None, project_name: str | None
-    ) -> Project:
-        if project_id:
-            result = await self.session.execute(
-                select(Project).where(
-                    Project.id == project_id,
-                    Project.organization_id == user.organization_id,
-                    Project.is_active.is_(True),
-                )
-            )
-            project = result.scalar_one_or_none()
-            if not project:
-                raise ValueError("Project not found in organization scope")
-            return project
-
-        name = project_name or "Default Security Validation Project"
-        result = await self.session.execute(
-            select(Project).where(
-                Project.organization_id == user.organization_id,
-                Project.name == name,
-            )
-        )
-        project = result.scalar_one_or_none()
-        if project is None:
-            project = Project(
-                organization_id=user.organization_id,
-                owner_id=user.id,
-                name=name,
-                description="Created by scan start workflow",
-            )
-            self.session.add(project)
-            await self.session.flush()
-        return project
-
-    async def _resolve_target(
-        self,
-        organization_id: str,
-        project_id: str,
-        target_url: str,
-        allowed_domains: list[str] | None,
-    ) -> Target:
-        result = await self.session.execute(
-            select(Target).where(
-                Target.organization_id == organization_id,
-                Target.project_id == project_id,
-                Target.base_url == target_url,
-            )
-        )
-        target = result.scalar_one_or_none()
-        if target is None:
-            target = Target(
-                organization_id=organization_id,
-                project_id=project_id,
-                base_url=target_url,
-                allowed_domains=allowed_domains or [],
-            )
-            self.session.add(target)
-            await self.session.flush()
-        return target
-
-    async def _create_policy(
-        self, organization_id: str, project_id: str, payload: dict[str, Any] | None
-    ) -> Policy:
-        payload = payload or {}
-        settings = get_settings()
-        policy = Policy(
-            organization_id=organization_id,
-            project_id=project_id,
-            name=payload.get("name") or "Default MVP Safe Scan Policy",
-            max_requests_per_second=min(
-                float(
-                    payload.get(
-                        "max_requests_per_second", settings.max_requests_per_second
-                    )
-                ),
-                settings.max_requests_per_second,
-            ),
-            allow_sqli_validation=bool(payload.get("allow_sqli_validation", True)),
-            allow_auth_validation=bool(payload.get("allow_auth_validation", True)),
-            allow_timing_validation=bool(payload.get("allow_timing_validation", False)),
-            excluded_paths=list(payload.get("excluded_paths", [])),
-            forbidden_paths=list(payload.get("forbidden_paths", [])),
-            scope_boundaries=list(payload.get("scope_boundaries", [])),
-            max_depth=int(payload.get("max_depth", settings.max_crawl_depth)),
-            max_pages=int(payload.get("max_pages", settings.max_crawl_pages)),
-        )
-        self.session.add(policy)
-        await self.session.flush()
-        return policy
+logger = logging.getLogger(__name__)
 
 
 async def run_scan_by_id(
     scan_id: str, runtime_options: dict[str, Any] | None = None
 ) -> None:
     runtime_options = runtime_options or {}
-    async with AsyncSessionLocal() as session:
+    async with get_sessionmaker()() as session:
         runner = ScanRunner(session)
         await runner.run(scan_id, runtime_options)
 
 
-class ScanRunner:
+class ScanRunner(_ScoringMixin, _ReportingMixin):
     def __init__(self, session: AsyncSession):
         self.session = session
         self.classifier = EndpointClassifier()
@@ -273,7 +115,7 @@ class ScanRunner:
                 await self._fail_no_coverage(
                     scan,
                     reason=target_decision.reason,
-                    diagnostics={"blocked_target": target_decision.__dict__},
+                    diagnostics={"blocked_target": asdict(target_decision)},
                 )
                 return
 
@@ -479,7 +321,7 @@ class ScanRunner:
         started = loop.time()
         while True:
             await asyncio.sleep(1.0)
-            async with AsyncSessionLocal() as progress_session:
+            async with get_sessionmaker()() as progress_session:
                 scan = await progress_session.get(Scan, scan_id)
                 if scan is None:
                     return
@@ -890,112 +732,6 @@ class ScanRunner:
         await self.session.commit()
         return finding
 
-    def _finding_metadata(self, result: ValidationResult) -> dict[str, Any]:
-        return {
-            "confidence_score": round(float(result.confidence), 1),
-            "confidence_level": result.confidence_level,
-            "exploitability_assessment": result.exploitability_assessment,
-            "reproduction_stability": result.reproduction_stability,
-            "evidence_quality": result.evidence_quality,
-            "false_positive_likelihood": result.false_positive_likelihood,
-        }
-
-    def _normalize_severity(
-        self, result: ValidationResult, metadata: dict[str, Any]
-    ) -> str:
-        requested = (result.severity or "info").lower()
-        finding_type = result.finding_type
-        confidence = float(result.confidence or 0)
-        exploitability = str(metadata.get("exploitability_assessment") or "")
-        false_positive_likelihood = str(
-            metadata.get("false_positive_likelihood") or "HIGH"
-        )
-
-        if confidence < 65 or false_positive_likelihood == "HIGH":
-            requested = min(requested, "low", key=self._severity_rank)
-
-        if finding_type in {"jwt_observed", "swagger_metadata", "framework_disclosure"}:
-            return "info"
-        if finding_type == "protected_internal_surface":
-            return "info"
-        if finding_type == "internal_api_discovery":
-            return (
-                "medium" if result.evidence.get("exposed_sensitive_markers") else "low"
-            )
-        if finding_type == "segmentation_exposure":
-            return "low" if requested not in {"info"} else requested
-        if finding_type == "graphql_schema_exposure":
-            return "medium" if requested in {"critical", "high", "medium"} else "low"
-        if finding_type == "client_side_auth_token_storage":
-            return "medium"
-        if finding_type == "modern_vuln_bank_attack_surface":
-            return "low"
-        if finding_type == "jwt_weakness":
-            return (
-                "high"
-                if result.evidence.get("alg_none")
-                or result.evidence.get("unsigned_token_accepted")
-                else "medium"
-            )
-        if finding_type == "sqli":
-            return (
-                "high"
-                if confidence >= 90
-                and result.evidence.get("confirmed_signal_count", 0) >= 2
-                else "medium"
-            )
-        if finding_type == "sqli_auth_bypass":
-            return (
-                "critical"
-                if confidence >= 95 and exploitability == "CONFIRMED_EXPLOIT"
-                else "high"
-            )
-        if finding_type in {
-            "jwt_privilege_escalation_execution",
-            "jwt_claim_integrity_bypass",
-            "jwt_forge_endpoint_exposed",
-        }:
-            return (
-                "critical"
-                if exploitability == "CONFIRMED_EXPLOIT" and confidence >= 95
-                else "high"
-            )
-        if finding_type in {
-            "unauthenticated_sensitive_api_exposure",
-            "cors_credentials_misconfiguration",
-            "oauth_open_redirect_authorization_code_theft",
-            "access_control_matrix",
-            "missing_authorization",
-            "bola_idor",
-        }:
-            return "high" if confidence >= 85 else "medium"
-        return requested
-
-    def _severity_rank(self, severity: str) -> int:
-        return {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}.get(
-            severity, 0
-        )
-
-    def _severity_score_cap(self, severity: str) -> float:
-        return {
-            "critical": 100.0,
-            "high": 89.0,
-            "medium": 74.0,
-            "low": 49.0,
-            "info": 24.0,
-        }.get(severity, 24.0)
-
-    def _business_impact(self, severity: str, metadata: dict[str, Any]) -> str:
-        if severity == "critical":
-            return "Immediate executive attention; confirmed exploitability with replayable evidence."
-        if severity == "high":
-            return "High-priority remediation; validated exposure with material security or privacy impact."
-        if severity == "medium":
-            return "Track in remediation roadmap; evidence indicates a bounded security weakness."
-        if severity == "low":
-            return "Attack surface or hardening signal; review through normal backlog."
-        return "Informational signal for governance visibility."
-
     async def _run_data_rights_validation(
         self,
         scan: Scan,
@@ -1159,271 +895,3 @@ class ScanRunner:
 
             await self.session.flush()
 
-    async def _generate_default_reports(self, scan: Scan) -> None:
-        result = await self.session.execute(
-            select(Finding).where(
-                Finding.scan_id == scan.id,
-                Finding.organization_id == scan.organization_id,
-            )
-        )
-        findings = list(result.scalars().all())
-        if not findings:
-            return
-        endpoint_result = await self.session.execute(
-            select(Endpoint)
-            .where(
-                Endpoint.scan_id == scan.id,
-                Endpoint.organization_id == scan.organization_id,
-            )
-            .order_by(Endpoint.risk_score.desc(), Endpoint.created_at.asc())
-        )
-        context = {
-            "project": await self.session.get(Project, scan.project_id),
-            "target": await self.session.get(Target, scan.target_id),
-            "policy": await self.session.get(Policy, scan.policy_id),
-            "scan": scan,
-            "generated_by": await self.session.get(User, scan.started_by_id),
-            "endpoints": list(endpoint_result.scalars().all()),
-        }
-        html = self.reporting.render_html(
-            title="NyuwunSewu Security Validation Report",
-            findings=findings,
-            report_type="Technical Report",
-            context=context,
-        )
-        report = self.reporting.build_report_row(
-            organization_id=scan.organization_id,
-            project_id=scan.project_id,
-            scan_id=scan.id,
-            generated_by_id=scan.started_by_id,
-            report_type="Technical Report",
-            export_format="html",
-            title="Security Validation Technical Report",
-            content=html,
-        )
-        self.session.add(report)
-        executive_html = self.reporting.render_html(
-            title="NyuwunSewu Executive Summary",
-            findings=findings,
-            report_type="Executive Summary",
-            context=context,
-        )
-        self.session.add(
-            self.reporting.build_report_row(
-                organization_id=scan.organization_id,
-                project_id=scan.project_id,
-                scan_id=scan.id,
-                generated_by_id=scan.started_by_id,
-                report_type="Executive Summary",
-                export_format="html",
-                title="Executive Summary",
-                content=executive_html,
-            )
-        )
-        await self.session.flush()
-
-    async def _scan_stats(
-        self, scan: Scan, phase: str, progress: int
-    ) -> dict[str, Any]:
-        endpoint_count = await self.session.scalar(
-            select(func.count(Endpoint.id)).where(Endpoint.scan_id == scan.id)
-        )
-        finding_count = await self.session.scalar(
-            select(func.count(Finding.id)).where(Finding.scan_id == scan.id)
-        )
-        report_count = await self.session.scalar(
-            select(func.count(Report.id)).where(Report.scan_id == scan.id)
-        )
-        max_risk = await self.session.scalar(
-            select(func.max(Finding.risk_score)).where(Finding.scan_id == scan.id)
-        )
-        compliance_count = await self.session.scalar(
-            select(func.count(ComplianceMapping.id)).where(
-                ComplianceMapping.finding_id.in_(
-                    select(Finding.id).where(Finding.scan_id == scan.id)
-                )
-            )
-        )
-        previous = scan.stats or {}
-        return {
-            **previous,
-            "message": "Completed",
-            "phase": phase,
-            "progress_percentage": progress,
-            "endpoints": endpoint_count or 0,
-            "endpoints_discovered": endpoint_count or 0,
-            "findings": finding_count or 0,
-            "findings_discovered": finding_count or 0,
-            "reports": report_count or 0,
-            "risk_score": round(float(max_risk or 0), 2),
-            "compliance_impact": compliance_count or 0,
-            "coverage_status": "complete",
-        }
-
-    def _progress(
-        self, *, phase: str, progress: int, message: str, **extra: Any
-    ) -> dict[str, Any]:
-        return {
-            "phase": phase,
-            "progress_percentage": max(0, min(100, progress)),
-            "message": message,
-            "endpoints_discovered": extra.pop("endpoints_discovered", 0),
-            "parameters_discovered": extra.pop("parameters_discovered", 0),
-            "findings_discovered": extra.pop("findings_discovered", 0),
-            "active_validations": extra.pop("active_validations", []),
-            "risk_score": extra.pop("risk_score", 0),
-            "compliance_impact": extra.pop("compliance_impact", 0),
-            "coverage_status": "running",
-            **extra,
-        }
-
-    def _active_validations(self, policy: PolicyEngine) -> list[str]:
-        validations = ["pii_detection", "segmentation"]
-        if policy.is_validation_allowed("sqli"):
-            validations.append("sqli")
-        if policy.is_validation_allowed("path_traversal"):
-            validations.append("path_traversal")
-        if policy.is_validation_allowed("reflected_html"):
-            validations.append("reflected_html_injection")
-        if policy.is_validation_allowed("timing"):
-            validations.append("timing")
-        if policy.is_validation_allowed("auth"):
-            validations.extend(
-                [
-                    "auth",
-                    "access_matrix",
-                    "bola_idor",
-                    "api_exposure",
-                    "cors",
-                    "username_enumeration",
-                    "jwt_integrity_negative_control",
-                ]
-            )
-        return validations
-
-    async def _fail_no_coverage(
-        self,
-        scan: Scan,
-        *,
-        reason: str,
-        diagnostics: dict[str, Any] | None = None,
-    ) -> None:
-        scan.status = ScanStatus.FAILED.value
-        scan.finished_at = utcnow()
-        scan.error = reason
-        scan.stats = self._progress(
-            phase="No Coverage",
-            progress=100,
-            message=reason,
-            diagnostics=diagnostics or {},
-        ) | {
-            "coverage_status": "no_coverage",
-            "endpoints": 0,
-            "findings": 0,
-            "reports": 0,
-        }
-        await self.session.commit()
-        await self._dispatch_webhooks(scan, "scan.failed")
-
-    async def _dispatch_webhooks(self, scan: Scan, event: str) -> None:
-        """Fire matching webhook subscriptions for a scan lifecycle event."""
-        try:
-            from sqlalchemy import select as sel
-
-            from app.models import WebhookSubscription
-            from app.services.webhook_service import dispatch_webhook
-
-            result = await self.session.execute(
-                sel(WebhookSubscription).where(
-                    WebhookSubscription.organization_id == scan.organization_id,
-                    WebhookSubscription.is_active.is_(True),
-                )
-            )
-            subscriptions = list(result.scalars().all())
-
-            scan_stats = scan.stats or {}
-            target = (
-                await self.session.get(Target, scan.target_id)
-                if scan.target_id
-                else None
-            )
-            payload = {
-                "event": event,
-                "scan_id": scan.id,
-                "target_url": target.base_url if target else None,
-                "project_id": scan.project_id,
-                "status": scan.status,
-                "stats": scan_stats,
-                "error": scan.error,
-                "findings_count": scan_stats.get("findings", 0),
-                "endpoints_count": scan_stats.get("endpoints", 0),
-                "finished_at": scan.finished_at.isoformat()
-                if scan.finished_at
-                else None,
-            }
-
-            delivery_errors: list[str] = []
-            for sub in subscriptions:
-                if event not in (sub.events or []):
-                    continue
-                status_code = await dispatch_webhook(
-                    url=sub.url,
-                    event=event,
-                    data=payload,
-                    secret=sub.secret,
-                    extra_headers=sub.headers or None,
-                )
-                sub.last_delivery_at = utcnow()
-                sub.last_delivery_status = status_code
-                # dispatch_webhook returns 0 on connection failure and the raw
-                # HTTP status otherwise. Anything outside 2xx is a failed
-                # delivery that must NOT be swallowed: log it and record it on
-                # the scan so a down/misconfigured receiver is visible.
-                if not 200 <= status_code < 300:
-                    detail = (
-                        f"HTTP {status_code}"
-                        if status_code
-                        else "no response (connection error/timeout)"
-                    )
-                    msg = f"{event} -> {sub.url}: {detail}"
-                    logger.warning("Webhook delivery failed: %s", msg)
-                    delivery_errors.append(msg)
-                else:
-                    logger.info(
-                        "Webhook delivered: %s -> %s (HTTP %s)",
-                        event,
-                        sub.url,
-                        status_code,
-                    )
-
-            if delivery_errors:
-                # Reassign (don't mutate in place): scan.stats is a plain JSON
-                # column without mutation tracking, so an in-place append would
-                # not be persisted.
-                stats = dict(scan.stats or {})
-                stats["_webhook_errors"] = (
-                    list(stats.get("_webhook_errors") or []) + delivery_errors
-                )
-                scan.stats = stats
-            await self.session.commit()
-        except Exception as exc:
-            logger.error(
-                "Webhook dispatch failed for scan %s (%s): %s",
-                scan.id,
-                event,
-                exc,
-                exc_info=True,
-            )
-            # Best-effort: persist the failure on the scan so it is visible,
-            # without letting a follow-on error crash scan completion.
-            try:
-                stats = dict(scan.stats or {})
-                stats["_webhook_errors"] = list(
-                    stats.get("_webhook_errors") or []
-                ) + [f"{event}: {exc}"]
-                scan.stats = stats
-                await self.session.commit()
-            except Exception:
-                logger.exception(
-                    "Failed to record webhook dispatch error on scan %s", scan.id
-                )

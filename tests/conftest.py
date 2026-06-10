@@ -7,6 +7,7 @@ import pytest
 os.environ.setdefault("ENVIRONMENT", "test")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./test_nyuwunsewu.db")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-nyuwunsewu")
+os.environ.setdefault("AGENT_SECRET", "test-agent-secret-for-nyuwunsewu")
 os.environ.setdefault("BOOTSTRAP_ADMIN_EMAIL", "admin@nyuwunsewu.local")
 os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "ChangeMe123!")
 

@@ -225,8 +225,18 @@ async def complete_session(
     return agent_session
 
 
+# Keeps references to in-flight notification tasks so they are not garbage
+# collected before completing (asyncio holds only weak refs to tasks).
+_telegram_tasks: set[asyncio.Task] = set()
+
+
 async def log_to_telegram(message: str) -> None:
-    """Send a log message to Telegram."""
+    """Schedule a fire-and-forget Telegram notification.
+
+    Detached as a background task so request handlers (agent ingest / log /
+    complete) return immediately instead of blocking on Telegram's network
+    round-trip (up to the 10s client timeout). Delivery is best-effort.
+    """
     settings = get_settings()
     telegram_token = getattr(settings, "telegram_bot_token", None)
     telegram_chat_id = getattr(settings, "telegram_chat_id", None)
@@ -235,13 +245,16 @@ async def log_to_telegram(message: str) -> None:
         logger.debug("Telegram not configured, skipping log")
         return
 
-    url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
-    payload = {
-        "chat_id": telegram_chat_id,
-        "text": message,
-        "parse_mode": "HTML",
-    }
+    task = asyncio.create_task(
+        _deliver_telegram(telegram_token, telegram_chat_id, message)
+    )
+    _telegram_tasks.add(task)
+    task.add_done_callback(_telegram_tasks.discard)
 
+
+async def _deliver_telegram(token: str, chat_id: str, message: str) -> None:
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
     try:
         timeout = aiohttp.ClientTimeout(total=10)
         async with aiohttp.ClientSession(timeout=timeout) as http_session:
@@ -256,16 +269,18 @@ async def find_session_by_prefix(
     session: AsyncSession,
     prefix: str,
 ) -> AgentSession | None:
-    """Find an agent session by its ID prefix (first 8 chars)."""
-    # Fetch all sessions and match by prefix
+    """Find the most recent agent session whose ID starts with ``prefix``."""
+    prefix = prefix.lower()
+    # Escape LIKE wildcards so a stray % or _ in the prefix can't broaden the
+    # match, then push the prefix filter into SQL instead of scanning rows.
+    escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     result = await session.execute(
-        select(AgentSession).order_by(AgentSession.created_at.desc()).limit(100)
+        select(AgentSession)
+        .where(func.lower(AgentSession.id).like(f"{escaped}%", escape="\\"))
+        .order_by(AgentSession.created_at.desc())
+        .limit(1)
     )
-    sessions = result.scalars().all()
-    for s in sessions:
-        if s.id.lower().startswith(prefix.lower()):
-            return s
-    return None
+    return result.scalar_one_or_none()
 
 
 async def list_active_sessions(

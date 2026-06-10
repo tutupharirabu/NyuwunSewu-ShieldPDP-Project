@@ -1,7 +1,7 @@
 import hmac
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Header, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -126,10 +126,13 @@ def _verify_agent_auth(x_agent_secret: str | None) -> bool:
         return False
     settings = get_settings()
     agent_secret = getattr(settings, "agent_secret", None)
-    if agent_secret and hmac.compare_digest(x_agent_secret, agent_secret):
-        return True
-    # Fallback: check if it matches the app secret_key (convenient for local dev)
-    return hmac.compare_digest(x_agent_secret, settings.secret_key)
+    if not agent_secret:
+        logger.warning(
+            "AGENT_SECRET is not configured — rejecting agent request. "
+            "Set AGENT_SECRET or PHANTOM_AGENT_SECRET in your environment."
+        )
+        return False
+    return hmac.compare_digest(x_agent_secret, agent_secret)
 
 
 @router.post(
@@ -169,9 +172,7 @@ async def ingest_agent_finding(
         await session.execute(select(Scan).where(Scan.id == payload.scan_id))
     ).scalar_one_or_none()
     if scan is None:
-        raise HTTPException(
-            status_code=404, detail=f"Scan {payload.scan_id} not found"
-        )
+        raise HTTPException(status_code=404, detail=f"Scan {payload.scan_id} not found")
 
     scan_id = scan.id
     target_id = scan.target_id
@@ -202,15 +203,20 @@ async def ingest_agent_finding(
                 "url": payload.request_url,
                 "headers": _redact_sensitive(payload.request_headers),
                 "body": payload.request_body,
-            } if payload.request_url else None,
+            }
+            if payload.request_url
+            else None,
             "response": {
                 "status": payload.response_status,
                 "headers": _redact_sensitive(payload.response_headers),
                 "body": payload.response_body,
-            } if payload.response_status is not None else None,
+            }
+            if payload.response_status is not None
+            else None,
         },
         compliance=[],
-        remediation_guidance=payload.remediation or "Review and remediate the identified vulnerability.",
+        remediation_guidance=payload.remediation
+        or "Review and remediate the identified vulnerability.",
     )
     session.add(finding)
     await session.commit()
@@ -238,9 +244,7 @@ async def ingest_agent_finding(
                 },
             )
     except Exception:
-        logger.warning(
-            "Failed to log ingested finding to agent session", exc_info=True
-        )
+        logger.warning("Failed to log ingested finding to agent session", exc_info=True)
 
     return AgentFindingResponse(
         finding_id=finding.id,
@@ -258,4 +262,6 @@ def _redact_sensitive(headers: dict | None) -> dict | None:
     if not headers:
         return headers
     sensitive = {"authorization", "cookie", "x-api-key", "x-agent-secret"}
-    return {k: "[REDACTED]" if k.lower() in sensitive else v for k, v in headers.items()}
+    return {
+        k: "[REDACTED]" if k.lower() in sensitive else v for k, v in headers.items()
+    }

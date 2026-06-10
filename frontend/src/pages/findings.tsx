@@ -135,6 +135,61 @@ function formatResponse(evidence: FindingEvidenceResponse) {
     .trim();
 }
 
+// Agent (Phantom) findings carry their request/response in evidence_summary
+// instead of a dedicated Evidence record. Reconstruct the raw HTTP view from
+// those fields so the Raw HTTP panels are populated for agent findings too.
+function formatRequestFromSummary(
+  summary: Record<string, unknown>,
+): string | null {
+  const request = summary.request;
+  if (!request || typeof request !== "object") return null;
+  const r = request as Record<string, unknown>;
+  const method = String(r.method ?? "GET");
+  const version = String(r.http_version ?? "HTTP/1.1");
+  const url = String(r.url ?? "");
+  let target = url || "/";
+  let host = "";
+  try {
+    const parsed = new URL(url);
+    target = `${parsed.pathname}${parsed.search}` || "/";
+    host = parsed.host;
+  } catch {
+    /* keep the raw url as the request target */
+  }
+  const headers = (r.headers ?? {}) as Record<string, unknown>;
+  const hasHost = Object.keys(headers).some((k) => k.toLowerCase() === "host");
+  const body = String(r.body ?? "");
+  return [
+    `${method} ${target} ${version}`,
+    ...(host && !hasHost ? [`Host: ${host}`] : []),
+    ...toHeaderLines(headers),
+    "",
+    body,
+  ]
+    .join("\n")
+    .trim();
+}
+
+function formatResponseFromSummary(
+  summary: Record<string, unknown>,
+): string | null {
+  const response = summary.response;
+  if (!response || typeof response !== "object") return null;
+  const r = response as Record<string, unknown>;
+  const status = String(r.status ?? "");
+  const reason = String(r.reason ?? "");
+  const version = String(r.http_version ?? "HTTP/1.1");
+  const body = String(r.body ?? "");
+  return [
+    `${version} ${status}${reason ? ` ${reason}` : ""}`,
+    ...toHeaderLines(r.headers),
+    "",
+    body,
+  ]
+    .join("\n")
+    .trim();
+}
+
 function evidenceString(finding: FindingResponse, key: string) {
   const value = finding.evidence_summary[key];
   return typeof value === "string" ? value : null;
@@ -595,7 +650,9 @@ export function FindingsPage() {
                   <pre className="h-[420px] overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs whitespace-pre-wrap break-all">
                     {evidence
                       ? formatRequest(evidence)
-                      : (evidenceError ?? "No request evidence available.")}
+                      : (formatRequestFromSummary(selected.evidence_summary) ??
+                        evidenceError ??
+                        "No request evidence available.")}
                   </pre>
                 )}
               </div>
@@ -607,7 +664,9 @@ export function FindingsPage() {
                   <pre className="h-[420px] overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs whitespace-pre-wrap break-all">
                     {evidence
                       ? formatResponse(evidence)
-                      : (evidenceError ?? "No response evidence available.")}
+                      : (formatResponseFromSummary(selected.evidence_summary) ??
+                        evidenceError ??
+                        "No response evidence available.")}
                   </pre>
                 )}
               </div>

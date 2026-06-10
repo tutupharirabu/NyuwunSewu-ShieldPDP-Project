@@ -20,7 +20,8 @@ from app.database.session import AsyncSessionLocal
 from app.main import app
 from app.models import Finding, Policy, Project, Scan, Target, User
 
-AGENT_HEADERS = {"X-Agent-Secret": get_settings().secret_key}
+_agent_secret = get_settings().agent_secret or ""
+AGENT_HEADERS = {"X-Agent-Secret": _agent_secret}
 LOGIN_BODY = {
     "email": "admin@nyuwunsewu.local",
     "password": "ChangeMe123!",
@@ -143,8 +144,12 @@ def test_session_findings_count_is_computed_from_ingested_findings():
         created = client.post(
             "/agent-sessions/ingest",
             headers=AGENT_HEADERS,
-            json={"scan_id": scan_id, "target_url": "https://lab.example",
-                  "agent_name": "phantom", "status": "exploring"},
+            json={
+                "scan_id": scan_id,
+                "target_url": "https://lab.example",
+                "agent_name": "phantom",
+                "status": "exploring",
+            },
         )
         assert created.status_code == 201, created.text
         session_id = created.json()["session_id"]
@@ -171,9 +176,14 @@ def test_agent_session_persists_all_log_entries():
         created = client.post(
             "/agent-sessions/ingest",
             headers=AGENT_HEADERS,
-            json={"scan_id": scan_id, "target_url": "https://lab.example",
-                  "agent_name": "phantom", "status": "exploring",
-                  "message": "Session started", "level": "info"},
+            json={
+                "scan_id": scan_id,
+                "target_url": "https://lab.example",
+                "agent_name": "phantom",
+                "status": "exploring",
+                "message": "Session started",
+                "level": "info",
+            },
         )
         assert created.status_code == 201, created.text
         session_id = created.json()["session_id"]
@@ -202,8 +212,12 @@ def test_finding_ingest_appends_log_to_session():
         created = client.post(
             "/agent-sessions/ingest",
             headers=AGENT_HEADERS,
-            json={"scan_id": scan_id, "target_url": "https://lab.example",
-                  "agent_name": "phantom", "status": "exploring"},
+            json={
+                "scan_id": scan_id,
+                "target_url": "https://lab.example",
+                "agent_name": "phantom",
+                "status": "exploring",
+            },
         )
         session_id = created.json()["session_id"]
 
@@ -216,5 +230,7 @@ def test_finding_ingest_appends_log_to_session():
         session = _agent_session_in_listing(client, session_id)
         actions = [log.get("action") for log in session["logs"]]
         assert "finding_submitted" in actions
-        submitted = [log for log in session["logs"] if log.get("action") == "finding_submitted"]
+        submitted = [
+            log for log in session["logs"] if log.get("action") == "finding_submitted"
+        ]
         assert any("IDOR on balance" in (log["message"] or "") for log in submitted)

@@ -131,12 +131,13 @@ class BreachNotificationService:
     """Manage data breach notifications per Pasal 46 UU PDP."""
 
     NOTIFICATION_DEADLINE_HOURS = SLA_DEADLINE_HOURS  # 3 x 24 jam = 72 hours
+    ALWAYS_ASSESS_FINDING_TYPES = ALWAYS_ASSESS_FINDING_TYPES
 
     @classmethod
     def should_assess(cls, finding_type: str) -> bool:
         """Check if a finding type warrants breach assessment."""
         normalized = finding_type.lower()
-        return normalized in ALWAYS_ASSESS_FINDING_TYPES or "pii" in normalized
+        return normalized in cls.ALWAYS_ASSESS_FINDING_TYPES or "pii" in normalized
 
     @classmethod
     def detect_breach(cls, findings: list[dict[str, Any]]) -> BreachAssessment:

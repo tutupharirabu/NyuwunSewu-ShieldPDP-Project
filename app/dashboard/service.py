@@ -1,4 +1,4 @@
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Finding, FindingStatus, Severity
@@ -13,23 +13,31 @@ class DashboardService:
         if target_id:
             scope.append(Finding.target_id == target_id)
 
-        total_findings = await self._count(*scope)
-        open_findings = await self._count(
-            *scope,
-            Finding.status != FindingStatus.CLOSED.value,
-            Finding.is_false_positive.is_(False),
-        )
-        critical_findings = await self._count(
-            *scope,
+        not_closed = Finding.status != FindingStatus.CLOSED.value
+        not_fp = Finding.is_false_positive.is_(False)
+        open_pred = and_(not_closed, not_fp)
+        critical_pred = and_(
             Finding.severity == Severity.CRITICAL.value,
-            Finding.status != FindingStatus.CLOSED.value,
-            Finding.is_false_positive.is_(False),
+            not_closed,
+            not_fp,
             Finding.confidence >= 70,
         )
-        closed = await self._count(
-            *scope,
-            Finding.status == FindingStatus.CLOSED.value,
-        )
+        closed_pred = Finding.status == FindingStatus.CLOSED.value
+
+        # Single round-trip for all four counts via conditional aggregation
+        # (was four sequential COUNT queries). COUNT(CASE WHEN pred THEN 1) is
+        # portable across SQLite and Postgres; the unmatched branch is NULL and
+        # therefore not counted.
+        total_findings, open_findings, critical_findings, closed = (
+            await self.session.execute(
+                select(
+                    func.count(Finding.id),
+                    func.count(case((open_pred, 1))),
+                    func.count(case((critical_pred, 1))),
+                    func.count(case((closed_pred, 1))),
+                ).where(*scope)
+            )
+        ).one()
         compliance_score = 100 if total_findings == 0 else max(0, round(100 - open_findings * 6 - critical_findings * 12))
         security_score = 100 if total_findings == 0 else max(0, round(100 - open_findings * 5 - critical_findings * 15))
         remediation_progress = 100 if total_findings == 0 else round((closed / total_findings) * 100)
@@ -49,7 +57,3 @@ class DashboardService:
             "remediation_progress": remediation_progress,
             "severity_breakdown": severity_breakdown,
         }
-
-    async def _count(self, *criteria) -> int:
-        result = await self.session.execute(select(func.count(Finding.id)).where(*criteria))
-        return int(result.scalar_one())

@@ -1,6 +1,7 @@
 """Agent session management API endpoints."""
 
 import hmac
+import logging
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel
@@ -20,12 +21,12 @@ from app.schemas.agent import (
 )
 from app.services import agent_service
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["agent-sessions"])
 
 
-def _session_response(
-    s: AgentSession, findings_count: int
-) -> AgentSessionResponse:
+def _session_response(s: AgentSession, findings_count: int) -> AgentSessionResponse:
     """Build the API response, overriding findings_count with the value
     computed from the findings table (see agent_service.agent_finding_counts)."""
     return AgentSessionResponse(
@@ -53,9 +54,13 @@ def _verify_agent_auth(x_agent_secret: str | None) -> bool:
         return False
     settings = get_settings()
     agent_secret = getattr(settings, "agent_secret", None)
-    if agent_secret and hmac.compare_digest(x_agent_secret, agent_secret):
-        return True
-    return hmac.compare_digest(x_agent_secret, settings.secret_key)
+    if not agent_secret:
+        logger.warning(
+            "AGENT_SECRET is not configured — rejecting agent request. "
+            "Set AGENT_SECRET or PHANTOM_AGENT_SECRET in your environment."
+        )
+        return False
+    return hmac.compare_digest(x_agent_secret, agent_secret)
 
 
 class AgentSessionIngest(BaseModel):
@@ -125,9 +130,7 @@ async def get_agent_session(
     agent_session = result.scalar_one_or_none()
     if agent_session is None:
         raise HTTPException(status_code=404, detail="Agent session not found")
-    counts = await agent_service.agent_finding_counts(
-        session, [agent_session.scan_id]
-    )
+    counts = await agent_service.agent_finding_counts(session, [agent_session.scan_id])
     findings_count = (
         counts.get(agent_session.scan_id, 0)
         if agent_session.scan_id
