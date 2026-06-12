@@ -204,11 +204,14 @@ class _ReportingMixin:
             else None
         )
         roe_text = None
+        roe_extraction_warning = False
         if scan.roe_document_id:
             from app.models import RoeDocument
 
             doc = await self.session.get(RoeDocument, scan.roe_document_id)
-            roe_text = doc.extracted_text if doc else None
+            if doc:
+                roe_text = doc.extracted_text
+                roe_extraction_warning = doc.extraction_warning
         if roe_text is not None:
             logger.info(
                 "Webhook scan %s carries roe_text of %d chars", scan.id, len(roe_text)
@@ -226,6 +229,7 @@ class _ReportingMixin:
             "engagement_mode": scan.engagement_mode,
             "roe_basis": scan.roe_basis,
             "roe_text": roe_text,
+            "roe_extraction_warning": roe_extraction_warning,
             "finished_at": scan.finished_at.isoformat()
             if scan.finished_at
             else None,
