@@ -153,6 +153,26 @@ export const api = {
         body: JSON.stringify(payload),
       },
     ),
+  uploadRoe: async (file: File): Promise<{
+    roe_document_id: string;
+    filename: string;
+    char_count: number;
+    extraction_warning: boolean;
+  }> => {
+    const token = getToken();
+    const form = new FormData();
+    form.append("file", file);
+    form.append("engagement_mode", "external");
+    const resp = await fetch(`${API_BASE}/scan/roe`, {
+      method: "POST",
+      headers: token ? { authorization: `Bearer ${token}` } : undefined,
+      body: form,
+    });
+    if (!resp.ok) {
+      throw new ApiError((await resp.text()) || resp.statusText, resp.status);
+    }
+    return resp.json();
+  },
   updateRemediation: (findingId: string, status: string, notes?: string) =>
     request<RemediationSummary>(`/remediation/${findingId}`, {
       method: "PUT",

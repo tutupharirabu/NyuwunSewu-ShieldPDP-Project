@@ -241,6 +241,8 @@ export interface ScanStartPayload {
     admin_paths: string[];
     modern_vuln_bank_probes: boolean;
   };
+  engagement_mode?: "internal" | "external";
+  roe_document_id?: string | null;
 }
 
 export interface AgentSessionLog {
