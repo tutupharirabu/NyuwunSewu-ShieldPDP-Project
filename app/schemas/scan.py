@@ -101,3 +101,10 @@ class ScanStatusResponse(BaseModel):
     project_id: str
     stats: dict[str, Any]
     error: str | None = None
+
+
+class RoeUploadResponse(BaseModel):
+    roe_document_id: str
+    filename: str
+    char_count: int
+    extraction_warning: bool
