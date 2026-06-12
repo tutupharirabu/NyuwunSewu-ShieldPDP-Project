@@ -57,6 +57,9 @@ export function ScanPage() {
   const [loginPath, setLoginPath] = useState("/login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [engagementMode, setEngagementMode] = useState<"internal" | "external">("internal");
+  const [roeFile, setRoeFile] = useState<File | null>(null);
+  const [roeWarning, setRoeWarning] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -77,6 +80,16 @@ export function ScanPage() {
         loginPath.trim() && username && password
           ? Array.from(new Set([loginPath.trim(), ...requestedPaths]))
           : requestedPaths;
+      let roeDocumentId: string | null = null;
+      if (engagementMode === "external" && roeFile) {
+        const up = await api.uploadRoe(roeFile);
+        roeDocumentId = up.roe_document_id;
+        setRoeWarning(
+          up.extraction_warning
+            ? "RoE text could not be fully extracted (image-only PDF?). The agent will be warned to verify scope manually."
+            : null,
+        );
+      }
       const payload: ScanStartPayload = {
         target_url: targetUrl,
         project_id: selectedProject ? selectedProject.id : null,
@@ -99,6 +112,8 @@ export function ScanPage() {
           max_depth: maxDepth,
           max_pages: maxPages,
         },
+        engagement_mode: engagementMode,
+        roe_document_id: roeDocumentId,
         primary_headers: {},
         secondary_headers: {},
         admin_headers: {},
@@ -144,6 +159,36 @@ export function ScanPage() {
               onChange={(event) => setTargetUrl(event.target.value)}
               required
             />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="mode">Engagement mode</Label>
+            <Select
+              id="mode"
+              value={engagementMode}
+              onChange={(e) =>
+                setEngagementMode(e.target.value as "internal" | "external")
+              }
+            >
+              <option value="internal">Internal — SAFE (pre-prod / owned)</option>
+              <option value="external">External — NSFW (public / bug-bounty)</option>
+            </Select>
+            {engagementMode === "external" && (
+              <div className="space-y-1 pt-2">
+                <Label htmlFor="roe">Rules of Engagement (optional)</Label>
+                <Input
+                  id="roe"
+                  type="file"
+                  accept=".pdf,.md,.txt"
+                  onChange={(e) => setRoeFile(e.target.files?.[0] ?? null)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Empty = conservative default RoE (default_roe_v1) applies.
+                </p>
+                {roeWarning && (
+                  <p className="text-xs text-amber-600">{roeWarning}</p>
+                )}
+              </div>
+            )}
           </div>
           <div className="space-y-2">
             <Label>Project</Label>

@@ -16,7 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
-from app.models.enums import ScanStatus, TimestampMixin, new_id, now_utc
+from app.models.enums import EngagementMode, ScanStatus, TimestampMixin, new_id, now_utc
 
 
 class Scan(Base, TimestampMixin):
@@ -42,6 +42,13 @@ class Scan(Base, TimestampMixin):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     stats: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     error: Mapped[str | None] = mapped_column(Text)
+    engagement_mode: Mapped[str] = mapped_column(
+        String(16), default=EngagementMode.INTERNAL.value, nullable=False
+    )
+    roe_document_id: Mapped[str | None] = mapped_column(
+        ForeignKey("roe_documents.id"), nullable=True
+    )
+    roe_basis: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     project: Mapped["Project"] = relationship()  # noqa: F821
     target: Mapped["Target"] = relationship()  # noqa: F821

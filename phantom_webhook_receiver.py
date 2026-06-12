@@ -122,6 +122,18 @@ def _validate_secrets() -> None:
 
 _validate_secrets()
 
+# --- Default conservative Rules of Engagement (versioned) ---
+
+DEFAULT_ROE_V1 = """DEFAULT conservative RoE (default_roe_v1) - no document supplied.
+- IN SCOPE: the target host ONLY ({target_url}). No other hosts, subdomains, or
+  third-party services.
+- Non-destructive ONLY: no state-changing writes, no deletion, no DoS, no
+  brute-force floods.
+- No real-user-data exfiltration beyond the minimum needed to prove a finding.
+- Respect the scan policy's forbidden/excluded paths and robots directives.
+- Stop immediately and report (status=refused) if any action risks impacting
+  real users or production data."""
+
 # --- Bridge to Hermes ---
 
 
@@ -147,6 +159,10 @@ def _save_scan_context(scan_id: str, payload: dict) -> str:
         "status": payload.get("status", ""),
         "findings_count": payload.get("findings_count", 0),
         "endpoints_count": payload.get("endpoints_count", 0),
+        "engagement_mode": payload.get("engagement_mode", "internal"),
+        "roe_basis": payload.get("roe_basis"),
+        "roe_text": payload.get("roe_text"),
+        "roe_extraction_warning": payload.get("roe_extraction_warning", False),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "raw_payload": payload,
     }
@@ -200,8 +216,153 @@ def _create_agent_session(scan_id: str, target_url: str) -> str | None:
         return None
 
 
+def _shared_blocks(scan_id: str, target_url: str, session_block: str) -> str:
+    """SUBMISSION + HARD RULES shared by both engagement prompts."""
+    return f"""{session_block}
+
+== SUBMISSION (per confirmed finding) ==
+curl POST {NYUWUNSEWU_URL}/findings/ingest
+Headers: Content-Type: application/json, X-Agent-Secret: {AGENT_SECRET}
+Body (JSON) - MUST use these exact types:
+- scan_id: string ("{scan_id}")
+- finding_type: string ("idor"|"xss"|"auth_bypass"|"authz"|"info_disclosure"|"other")
+- title: string (short descriptive title)
+- severity: string ("critical"|"high"|"medium"|"low"|"info")
+- confidence: float (0.0-100.0)
+- description: string
+- reasoning: list of strings
+- evidence: dict
+- request_method: string
+- request_url: string
+- request_headers: dict or null
+- request_body: string or null
+- response_status: int
+- response_headers: dict or null
+- response_body: string
+- remediation: string
+- agent_name: string ("phantom")
+- exploit_chain: list of strings
+
+== HARD RULES ==
+Report ONLY findings confirmed through real HTTP interaction with concrete
+evidence. Never fabricate. Non-destructive only - no data deletion, no DoS, no
+brute-force floods. Stay strictly within {target_url}. Submit findings as you go.
+End with a concise summary of all findings submitted."""
+
+
+def _build_internal_prompt(
+    scan_id: str, target_url: str, context_path: str, session_block: str
+) -> str:
+    return f"""PHANTOM ENGAGEMENT - Authorized Web App Pentest (Learning Lab)
+
+== AUTHORIZATION (Phase 0 ALREADY SATISFIED - do NOT halt to ask) ==
+- Asset owner: the operator running this Hermes instance.
+- Authorization: GRANTED, in writing, by the asset owner. This is an OWNED lab.
+- Scope: {target_url} ONLY (scan {scan_id}). Private tailnet host, non-public.
+- RoE: non-destructive, minimum footprint, no real data exfiltration beyond proof.
+- Engagement type: grey-box assessment of a banking-style web application.
+Proceed immediately. Authorization is on file here; do NOT ask for it again.
+
+== AVAILABLE TOOLS (use ONLY these - actually installed on this host) ==
+PRIMARY ENGINE - use for auth / session / IDOR / authz / business-logic:
+  curl, wget, and python3 with: requests, aiohttp, PyJWT, websockets, cryptography.
+  For access-control bugs (IDOR/BOLA, authz), scripted requests with swapped
+  tokens/IDs is your STRONGEST tool - prefer it over scanners.
+SCANNERS / DISCOVERY:
+  nuclei v3.4.8 (vuln/misconfig/info-disclosure/XSS templates), nikto 2.6.0
+  (server misconfig), sqlmap 1.10.5 (confirm SQLi only - do NOT --dump real data),
+  ffuf 2.1.0 + gobuster (dir/param discovery), httpx (probe/tech), wafw00f (WAF),
+  nmap 7.80, mitmproxy/mitmdump (scripted proxy, only if needed).
+
+NOT INSTALLED - do NOT call these (they will fail and waste your budget):
+  burpsuite, amass, theHarvester, dalfox, arjun, wfuzz, jwt_tool, feroxbuster,
+  metasploit, searchsploit, hydra, john, hashcat, masscan, naabu, dirsearch,
+  xsstrike, tcpdump, tshark, shodan, whatweb (ruby missing).
+  Substitutes: XSS -> nuclei XSS templates + manual reflection via curl;
+  JWT -> PyJWT in python3; brute force -> SKIP (outside RoE).
+
+== BUDGET DISCIPLINE (CRITICAL - prior runs died in recon before submitting) ==
+You have a LIMITED turn budget. Do NOT spend it all on reconnaissance.
+- Recon is PARTIALLY DONE: read {context_path} first - it contains the endpoint
+  map from the scan. USE that list; do NOT re-crawl from scratch.
+- Run a COMPRESSED recon only (~5 turns max), then START VALIDATING.
+- SUBMIT each finding the MOMENT it is confirmed (incremental), never batch at end.
+
+== PRIORITIZED VALIDATION (banking app -> access control is the crown jewel) ==
+1. BOLA / IDOR (DO FIRST): register userA AND userB, replay object-ID requests
+   swapping IDs. Cross-account read/write => finding.
+2. AUTHZ / privilege escalation: can a normal customer reach admin-only endpoints?
+3. AUTH / session: weak password policy, missing rate-limit, JWT flaws (PyJWT).
+4. INJECTION: reflected XSS, SQLi (CONFIRM ONLY).
+5. INFO DISCLOSURE / MISCONFIG: verbose errors, exposed debug/config, missing headers.
+{_shared_blocks(scan_id, target_url, session_block)}"""
+
+
+def _build_external_prompt(
+    scan_id: str,
+    target_url: str,
+    context_path: str,
+    session_block: str,
+    roe_text: str | None,
+    roe_basis: str,
+    extraction_warning: bool,
+) -> str:
+    roe_block = roe_text if roe_text else DEFAULT_ROE_V1.format(target_url=target_url)
+    warn_line = (
+        "\n[WARNING] RoE extraction incomplete - the uploaded document could not be "
+        "read in full. VERIFY SCOPE MANUALLY before acting and refuse if uncertain."
+        if extraction_warning
+        else ""
+    )
+    return f"""PHANTOM ENGAGEMENT - Authorized Test of a LIVE / PUBLIC-FACING System
+
+== AUTHORIZATION (basis: {roe_basis}) ==
+This is an AUTHORIZED engagement against a live, public-facing production system.
+Your scope, permitted actions, and limits are DEFINED BY THE RULES OF ENGAGEMENT
+below. Treat the RoE as binding. If an action is not clearly permitted by the
+RoE, do NOT perform it - report a refusal (status=refused) instead.{warn_line}
+
+-- RULES OF ENGAGEMENT (authoritative) --
+{roe_block}
+-- END RULES OF ENGAGEMENT --
+
+== EXTRA HARD-STOPS (production system) ==
+- NO state-changing writes (no create/update/delete on real records).
+- NO real-user-data exfiltration beyond the minimum to prove a finding.
+- Honor every in-scope / out-of-scope boundary in the RoE. Out-of-scope = do not touch.
+- Stop and report (status=refused) at the first sign of real-user or production impact.
+
+== AVAILABLE TOOLS (use ONLY these - actually installed on this host) ==
+PRIMARY: curl, wget, python3 (requests, aiohttp, PyJWT, websockets, cryptography).
+  Scripted requests with swapped tokens/IDs are your STRONGEST tool for IDOR/authz.
+SCANNERS: nuclei v3.4.8, nikto 2.6.0, sqlmap 1.10.5 (confirm only - never --dump
+  real data), ffuf 2.1.0 + gobuster, httpx, wafw00f, nmap 7.80, mitmproxy
+  (only if RoE permits).
+NOT INSTALLED - do NOT call (they fail and waste budget): burpsuite, amass,
+  theHarvester, dalfox, arjun, wfuzz, jwt_tool, feroxbuster, metasploit,
+  searchsploit, hydra, john, hashcat, masscan, naabu, dirsearch, xsstrike,
+  tcpdump, tshark, shodan, whatweb. Substitutes: XSS -> nuclei templates + manual
+  curl reflection; JWT -> PyJWT; brute force -> SKIP (outside RoE).
+
+== BUDGET DISCIPLINE ==
+- Recon is PARTIALLY DONE: read {context_path} first (endpoint map). Do NOT re-crawl.
+- Compressed recon (~5 turns), then validate. Submit each finding when confirmed.
+
+== PRIORITIZED VALIDATION (within RoE scope) ==
+1. BOLA / IDOR  2. AUTHZ / privilege escalation  3. AUTH / session / JWT
+4. INJECTION (confirm only)  5. INFO DISCLOSURE / MISCONFIG
+{_shared_blocks(scan_id, target_url, session_block)}"""
+
+
 def _create_exploration_job(
-    scan_id: str, target_url: str, context_path: str, session_id: str | None = None
+    scan_id: str,
+    target_url: str,
+    context_path: str,
+    session_id: str | None = None,
+    engagement_mode: str = "internal",
+    roe_text: str | None = None,
+    roe_basis: str | None = None,
+    extraction_warning: bool = False,
 ) -> str | None:
     """Create a one-shot Hermes cron job that runs the agent exploration.
 
@@ -256,86 +417,17 @@ Do this at key milestones: start (status=exploring), each finding confirmed,
 the very end (status=completed), and immediately on any policy refusal
 (status=refused)."""
 
-    prompt = f"""PHANTOM ENGAGEMENT - Authorized Web App Pentest (Learning Lab)
-
-== AUTHORIZATION (Phase 0 ALREADY SATISFIED - do NOT halt to ask) ==
-- Asset owner: the operator running this Hermes instance.
-- Authorization: GRANTED, in writing, by the asset owner. This is an OWNED lab.
-- Scope: {target_url} ONLY (scan {scan_id}). Private tailnet host, non-public.
-- RoE: non-destructive, minimum footprint, no real data exfiltration beyond proof.
-- Engagement type: grey-box assessment of a banking-style web application.
-Proceed immediately. Authorization is on file here; do NOT ask for it again.
-
-== AVAILABLE TOOLS (use ONLY these - actually installed on this host) ==
-PRIMARY ENGINE - use for auth / session / IDOR / authz / business-logic:
-  curl, wget, and python3 with: requests, aiohttp, PyJWT, websockets, cryptography.
-  For access-control bugs (IDOR/BOLA, authz), scripted requests with swapped
-  tokens/IDs is your STRONGEST tool - prefer it over scanners.
-SCANNERS / DISCOVERY:
-  nuclei v3.4.8 (vuln/misconfig/info-disclosure/XSS templates), nikto 2.6.0
-  (server misconfig), sqlmap 1.10.5 (confirm SQLi only - do NOT --dump real data),
-  ffuf 2.1.0 + gobuster (dir/param discovery), httpx (probe/tech), wafw00f (WAF),
-  nmap 7.80, mitmproxy/mitmdump (scripted proxy, only if needed).
-
-NOT INSTALLED - do NOT call these (they will fail and waste your budget):
-  burpsuite, amass, theHarvester, dalfox, arjun, wfuzz, jwt_tool, feroxbuster,
-  metasploit, searchsploit, hydra, john, hashcat, masscan, naabu, dirsearch,
-  xsstrike, tcpdump, tshark, shodan, whatweb (ruby missing).
-  Substitutes: XSS -> nuclei XSS templates + manual reflection via curl;
-  JWT -> PyJWT in python3; brute force -> SKIP (outside RoE).
-
-== BUDGET DISCIPLINE (CRITICAL - prior runs died in recon before submitting) ==
-You have a LIMITED turn budget. Do NOT spend it all on reconnaissance.
-- Recon is PARTIALLY DONE: read {context_path} first - it contains the endpoint
-  map from the scan. USE that list; do NOT re-crawl from scratch.
-- Run a COMPRESSED recon only (~5 turns max). Do NOT produce the full 15-item
-  RECON_HUMAN report. Write a 5-line readiness note, then START VALIDATING.
-- SUBMIT each finding the MOMENT it is confirmed (incremental), never batch at end.
-
-== PRIORITIZED VALIDATION (banking app -> access control is the crown jewel) ==
-1. BOLA / IDOR (DO FIRST): register userA AND userB. As userA, capture requests
-   that carry an object ID (account/transaction/statement/profile id). Replay
-   them swapping in userB's IDs (and vice-versa). Cross-account read/write =>
-   finding. Prove it with the OTHER user's data visible in the response.
-2. AUTHZ / privilege escalation: can a normal customer reach admin-only
-   endpoints? Try verb tampering and forced browsing to admin paths.
-3. AUTH / session: weak password policy, missing login rate-limit, session or
-   JWT flaws (analyze tokens with PyJWT: alg confusion, weak/none secret, no expiry).
-4. INJECTION: reflected XSS (payload echoed unescaped in response), SQLi
-   (confirm via sqlmap WITHOUT dumping, or via error/timing) - CONFIRM ONLY.
-5. INFO DISCLOSURE / MISCONFIG: nuclei + nikto for verbose errors, exposed
-   debug/config endpoints, PII/tokens in responses, missing security headers.
-
-{session_block}
-
-== SUBMISSION (per confirmed finding) ==
-curl POST {NYUWUNSEWU_URL}/findings/ingest
-Headers: Content-Type: application/json, X-Agent-Secret: {AGENT_SECRET}
-Body (JSON) - MUST use these exact types:
-- scan_id: string ("{scan_id}")
-- finding_type: string ("idor"|"xss"|"auth_bypass"|"authz"|"info_disclosure"|"other")
-- title: string (short descriptive title)
-- severity: string ("critical"|"high"|"medium"|"low"|"info")
-- confidence: float (0.0-100.0, e.g. 80.0)
-- description: string (detailed explanation)
-- reasoning: list of strings (e.g. ["Step 1: logged in as userA", "Step 2: swapped id param to userB"])
-- evidence: dict (e.g. {{"response_excerpt": "showed userB account balance"}})
-- request_method: string ("GET"|"POST"|etc)
-- request_url: string (full URL tested)
-- request_headers: dict or null
-- request_body: string or null
-- response_status: int (e.g. 200)
-- response_headers: dict or null
-- response_body: string (relevant excerpt)
-- remediation: string (how to fix)
-- agent_name: string ("phantom")
-- exploit_chain: list of strings (step-by-step exploitation)
-
-== HARD RULES ==
-Report ONLY findings confirmed through real HTTP interaction with concrete
-evidence. Never fabricate. Non-destructive only - no data deletion, no DoS, no
-brute-force floods. Stay strictly within {target_url}. Submit findings as you go.
-End with a concise summary of all findings submitted."""
+    if engagement_mode == "external":
+        prompt = _build_external_prompt(
+            scan_id, target_url, context_path, session_block,
+            roe_text, roe_basis or "default_roe_v1", extraction_warning,
+        )
+        job_suffix = "ext-roe" if roe_basis == "document" else "ext-default"
+    else:
+        prompt = _build_internal_prompt(
+            scan_id, target_url, context_path, session_block
+        )
+        job_suffix = "int"
 
     result = _hermes_cli(
         "cron",
@@ -345,7 +437,7 @@ End with a concise summary of all findings submitted."""
         "--repeat",
         "1",
         "--name",
-        f"explore-{scan_id[:8]}",
+        f"explore-{job_suffix}-{scan_id[:8]}",
         "--deliver",
         "origin",
         timeout=60,
@@ -521,7 +613,16 @@ def _trigger_exploration(scan_id: str, target_url: str, payload: dict):
         session_id = _create_agent_session(scan_id, target_url)
 
         context_path = _save_scan_context(scan_id, payload)
-        job_id = _create_exploration_job(scan_id, target_url, context_path, session_id)
+        job_id = _create_exploration_job(
+            scan_id,
+            target_url,
+            context_path,
+            session_id,
+            engagement_mode=payload.get("engagement_mode", "internal"),
+            roe_text=payload.get("roe_text"),
+            roe_basis=payload.get("roe_basis"),
+            extraction_warning=payload.get("roe_extraction_warning", False),
+        )
         _notify_user(scan_id, target_url, job_id)
 
         log(f"\n[OK] Exploration pipeline complete!")

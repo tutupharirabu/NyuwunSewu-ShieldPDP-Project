@@ -1,0 +1,41 @@
+import phantom_webhook_receiver as pwr
+
+
+def test_internal_prompt_has_owned_lab_framing():
+    prompt = pwr._build_internal_prompt(
+        scan_id="s1", target_url="http://t", context_path="/tmp/ctx.json",
+        session_block="",
+    )
+    assert "OWNED lab" in prompt
+    assert "non-public" in prompt.lower() or "tailnet" in prompt.lower()
+    assert "NOT INSTALLED" in prompt
+
+
+def test_external_prompt_embeds_supplied_roe():
+    prompt = pwr._build_external_prompt(
+        scan_id="s1", target_url="http://t", context_path="/tmp/ctx.json",
+        session_block="", roe_text="IN SCOPE: api.example.com ONLY",
+        roe_basis="document", extraction_warning=False,
+    )
+    assert "IN SCOPE: api.example.com ONLY" in prompt
+    assert "public-facing" in prompt.lower()
+    assert "OWNED lab" not in prompt
+
+
+def test_external_prompt_uses_default_roe_when_absent():
+    prompt = pwr._build_external_prompt(
+        scan_id="s1", target_url="http://t", context_path="/tmp/ctx.json",
+        session_block="", roe_text=None, roe_basis="default_roe_v1",
+        extraction_warning=False,
+    )
+    assert pwr.DEFAULT_ROE_V1.strip()[:30] in prompt
+    assert "default_roe_v1" in prompt
+
+
+def test_external_prompt_flags_extraction_warning():
+    prompt = pwr._build_external_prompt(
+        scan_id="s1", target_url="http://t", context_path="/tmp/ctx.json",
+        session_block="", roe_text="", roe_basis="document",
+        extraction_warning=True,
+    )
+    assert "extraction incomplete" in prompt.lower()

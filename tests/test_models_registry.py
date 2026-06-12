@@ -19,3 +19,19 @@ def test_all_mappers_configure():
     # Raises if any relationship/forward-ref cannot be resolved (e.g. a new
     # model was added to its own file but not wired into app/models/__init__).
     configure_mappers()
+
+
+def test_engagement_mode_and_roe_document_registered():
+    from app.models import EngagementMode, RoeDocument, Scan
+
+    assert EngagementMode.INTERNAL.value == "internal"
+    assert EngagementMode.EXTERNAL.value == "external"
+    # Scan gained the engagement columns
+    assert "engagement_mode" in Scan.__table__.columns
+    assert "roe_document_id" in Scan.__table__.columns
+    assert "roe_basis" in Scan.__table__.columns
+    # RoeDocument table shape
+    cols = RoeDocument.__table__.columns
+    for name in ("id", "organization_id", "filename", "extracted_text",
+                 "char_count", "extraction_warning", "created_at"):
+        assert name in cols

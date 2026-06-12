@@ -31,9 +31,27 @@ class ScanService:
         policy_payload: dict[str, Any] | None,
         allowed_domains: list[str] | None,
         ip_address: str | None,
+        engagement_mode: str = "internal",
+        roe_document_id: str | None = None,
     ) -> Scan:
         if not user.organization_id:
             raise ValueError("User must belong to an organization to start scans")
+        roe_basis: str | None = None
+        if engagement_mode == "internal":
+            if roe_document_id:
+                raise ValueError("RoE documents apply only to external engagements")
+        elif engagement_mode == "external":
+            if roe_document_id:
+                from app.models import RoeDocument
+
+                doc = await self.session.get(RoeDocument, roe_document_id)
+                if doc is None or doc.organization_id != user.organization_id:
+                    raise ValueError("RoE document not found in organization scope")
+                roe_basis = "document"
+            else:
+                roe_basis = "default_roe_v1"
+        else:
+            raise ValueError(f"Unknown engagement_mode: {engagement_mode}")
         project = await self._resolve_project(user, project_id, project_name)
         target = await self._resolve_target(
             user.organization_id, project.id, target_url, allowed_domains
@@ -49,6 +67,9 @@ class ScanService:
             policy_id=policy.id,
             started_by_id=user.id,
             status=ScanStatus.QUEUED.value,
+            engagement_mode=engagement_mode,
+            roe_document_id=roe_document_id if engagement_mode == "external" else None,
+            roe_basis=roe_basis,
             stats={
                 "phase": "Queued",
                 "progress_percentage": 0,

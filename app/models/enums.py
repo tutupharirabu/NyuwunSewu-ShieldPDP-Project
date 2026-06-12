@@ -59,6 +59,19 @@ class SessionStatus(str, Enum):
     REFUSED = "refused"
 
 
+class EngagementMode(str, Enum):
+    """How an agent engagement is authorized.
+
+    ``INTERNAL`` (SAFE): owned / pre-prod target, authorization on file.
+    ``EXTERNAL`` (NSFW): authorized testing of a live / public-facing system,
+    scope and limits derived from an attached Rules-of-Engagement document
+    (or a versioned conservative default).
+    """
+
+    INTERNAL = "internal"
+    EXTERNAL = "external"
+
+
 class AgentActionPhase(str, Enum):
     """Canonical vocabulary for an agent session's ``current_action``.
 

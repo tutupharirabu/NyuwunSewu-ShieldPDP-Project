@@ -1,22 +1,26 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_ip, require_permission
 from app.core.config import get_settings
 from app.core.rbac import Permission
 from app.database.session import get_session
-from app.models import Scan, User
+from app.models import EngagementMode, RoeDocument, Scan, User
 from app.repositories.domain import DomainRepository
 from app.schemas.scan import (
+    RoeUploadResponse,
     ScanStartRequest,
     ScanStartResponse,
     ScanStatusResponse,
     ScanStopRequest,
 )
+from app.utils.roe_extract import UnsupportedRoeFile, extract_roe_text
 from app.services.scan_service import ScanService, run_scan_by_id
 from app.utils.redaction import redact_headers
 
 router = APIRouter(tags=["scans"])
+
+ROE_MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 
 
 @router.post("/scan/start", response_model=ScanStartResponse)
@@ -43,6 +47,8 @@ async def start_scan(
             policy_payload=payload.policy.model_dump(),
             allowed_domains=payload.allowed_domains,
             ip_address=current_ip(request),
+            engagement_mode=payload.engagement_mode.value,
+            roe_document_id=payload.roe_document_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -70,6 +76,53 @@ async def start_scan(
         scan_id=scan.id,
         status=scan.status,
         message="Scan queued with policy-enforced safe validation",
+    )
+
+
+@router.post("/scan/roe", response_model=RoeUploadResponse)
+async def upload_roe(
+    file: UploadFile = File(...),
+    engagement_mode: str = Form(...),
+    user: User = Depends(require_permission(Permission.SCAN_CREATE)),
+    session: AsyncSession = Depends(get_session),
+) -> RoeUploadResponse:
+    if engagement_mode != EngagementMode.EXTERNAL.value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="RoE documents apply only to external engagements",
+        )
+    if not user.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User must belong to an organization",
+        )
+    raw = await file.read()
+    if len(raw) > ROE_MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="RoE file exceeds 2 MB limit",
+        )
+    try:
+        extracted = extract_roe_text(file.filename or "roe", raw)
+    except UnsupportedRoeFile as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+    doc = RoeDocument(
+        organization_id=user.organization_id,
+        filename=file.filename or "roe",
+        extracted_text=extracted.text,
+        char_count=extracted.char_count,
+        extraction_warning=extracted.extraction_warning,
+    )
+    session.add(doc)
+    await session.commit()
+    return RoeUploadResponse(
+        roe_document_id=doc.id,
+        filename=doc.filename,
+        char_count=doc.char_count,
+        extraction_warning=doc.extraction_warning,
     )
 
 

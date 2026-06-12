@@ -1,6 +1,7 @@
 from app.models.agent import AgentSession, BreachNotification, WebhookSubscription
 from app.models.audit import AuditLog
 from app.models.enums import (
+    EngagementMode,
     FindingStatus,
     ScanStatus,
     Severity,
@@ -8,6 +9,7 @@ from app.models.enums import (
     new_id,
     now_utc,
 )
+from app.models.roe import RoeDocument
 from app.models.finding import ComplianceMapping, Evidence, Finding
 from app.models.organization import Organization, Role, User
 from app.models.project import Policy, Project, Target
@@ -19,6 +21,7 @@ __all__ = [
     "AuditLog",
     "BreachNotification",
     "ComplianceMapping",
+    "EngagementMode",
     "Endpoint",
     "Evidence",
     "Finding",
@@ -30,6 +33,7 @@ __all__ = [
     "Project",
     "RemediationTracking",
     "Report",
+    "RoeDocument",
     "Role",
     "Scan",
     "ScanStatus",

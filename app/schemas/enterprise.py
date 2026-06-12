@@ -43,6 +43,8 @@ class ScanListResponse(BaseModel):
 class ScanDetailResponse(ScanListResponse):
     policy_id: str
     stop_requested: bool
+    engagement_mode: str
+    roe_basis: str | None = None
 
 
 class EndpointInventoryResponse(BaseModel):

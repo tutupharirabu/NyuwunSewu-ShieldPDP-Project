@@ -2,6 +2,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.models.enums import EngagementMode
+
 
 class PolicyInput(BaseModel):
     name: str | None = None
@@ -70,6 +72,8 @@ class ScanStartRequest(BaseModel):
     auditor_headers: dict[str, str] = Field(default_factory=dict)
     custom_role_headers: dict[str, dict[str, str]] = Field(default_factory=dict)
     exploit_chains: ExploitChainInput = Field(default_factory=ExploitChainInput)
+    engagement_mode: EngagementMode = EngagementMode.INTERNAL
+    roe_document_id: str | None = None
 
     @field_validator("target_url")
     @classmethod
@@ -101,3 +105,10 @@ class ScanStatusResponse(BaseModel):
     project_id: str
     stats: dict[str, Any]
     error: str | None = None
+
+
+class RoeUploadResponse(BaseModel):
+    roe_document_id: str
+    filename: str
+    char_count: int
+    extraction_warning: bool
