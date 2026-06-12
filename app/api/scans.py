@@ -47,6 +47,8 @@ async def start_scan(
             policy_payload=payload.policy.model_dump(),
             allowed_domains=payload.allowed_domains,
             ip_address=current_ip(request),
+            engagement_mode=payload.engagement_mode.value,
+            roe_document_id=payload.roe_document_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

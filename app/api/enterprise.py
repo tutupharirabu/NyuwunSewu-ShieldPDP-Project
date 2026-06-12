@@ -153,6 +153,8 @@ async def get_scan(
         finished_at=scan.finished_at,
         created_at=scan.created_at,
         error=scan.error,
+        engagement_mode=scan.engagement_mode,
+        roe_basis=scan.roe_basis,
     )
 
 
