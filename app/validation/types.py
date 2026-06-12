@@ -129,6 +129,8 @@ def exploitability_assessment(finding_type: str, evidence: dict[str, Any]) -> st
         "jwt_forge_endpoint_exposed",
         "sqli_auth_bypass",
         "sqli_confirmed",
+        "ssrf_inband_url_fetch",
+        "negative_amount_business_logic",
     }
     validated_exposure_types = {
         "unauthenticated_sensitive_api_exposure",
@@ -142,6 +144,7 @@ def exploitability_assessment(finding_type: str, evidence: dict[str, Any]) -> st
         "client_side_auth_token_storage",
         "oauth_open_redirect_authorization_code_theft",
         "cors_credentials_misconfiguration",
+        "rate_limit_role_misclassification",
     }
     attack_surface_types = {
         "internal_api_discovery",

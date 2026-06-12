@@ -24,6 +24,7 @@ from app.models import (
     Target,
     User,
 )
+from app.reporting.evidence_loader import load_evidence_by_finding_id
 from app.services.policy_engine import PolicyEngine
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,11 @@ class _ReportingMixin:
             "scan": scan,
             "generated_by": await self.session.get(User, scan.started_by_id),
             "endpoints": list(endpoint_result.scalars().all()),
+            "evidence_by_finding_id": await load_evidence_by_finding_id(
+                self.session,
+                organization_id=scan.organization_id,
+                findings=findings,
+            ),
         }
         html = self.reporting.render_html(
             title="NyuwunSewu Security Validation Report",

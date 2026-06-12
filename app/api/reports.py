@@ -7,6 +7,7 @@ from app.core.rbac import Permission
 from app.database.session import get_session
 from app.models import Endpoint, Finding, Policy, Project, Report, Scan, Target, User
 from app.repositories.domain import DomainRepository
+from app.reporting.evidence_loader import load_evidence_by_finding_id
 from app.reporting.engine import ReportingEngine
 from app.schemas.report import ReportGenerateRequest, ReportResponse
 from app.services.audit_service import AuditService
@@ -118,6 +119,11 @@ async def generate_report(
         project_id=payload.project_id,
         scan_id=payload.scan_id,
         generated_by=user,
+    )
+    context["evidence_by_finding_id"] = await load_evidence_by_finding_id(
+        session,
+        organization_id=user.organization_id,
+        findings=findings,
     )
     html = engine.render_html(
         title=f"NyuwunSewu {payload.report_type}",

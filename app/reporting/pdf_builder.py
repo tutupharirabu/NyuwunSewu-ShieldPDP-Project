@@ -78,7 +78,7 @@ class PDFReportBuilder:
             ]
         )
 
-        self._section("Affected Items")
+        self._section("Affected Items / Discovered Paths")
         endpoint_rows = self.report["endpoint_rows"][:45]
         if endpoint_rows:
             for row in endpoint_rows:
@@ -86,7 +86,7 @@ class PDFReportBuilder:
         else:
             self._paragraph("No endpoint inventory was available for this report.")
 
-        self._section("Confirmed Exploits")
+        self._section("Confirmed Exploits and Attack Chains")
         exploits = self.report["exploit_findings"][:20]
         if exploits:
             for item in exploits:
@@ -422,56 +422,190 @@ class PDFReportBuilder:
         self.y -= 6
 
     def _finding_detail(self, detail: dict[str, Any]) -> None:
-        self._ensure(118)
-        color = SEVERITY_COLORS.get(detail.get("severity"), (0.39, 0.45, 0.55))
+        self._ensure(132)
+        severity = str(detail.get("severity") or "info").lower()
+        color = SEVERITY_COLORS.get(severity, (0.39, 0.45, 0.55))
         self._fill_rect(
             self.margin, self.y - 20, self.width - self.margin * 2, 20, color
         )
         self._text(
-            self.margin + 8, self.y - 13, detail["severity"].upper(), 8, "F2", (1, 1, 1)
+            self.margin + 8, self.y - 13, severity.upper(), 8, "F2", (1, 1, 1)
         )
         self._wrapped_text(
-            self.margin + 82, self.y - 13, detail["title"], 390, 8, "F2", (1, 1, 1)
+            self.margin + 82,
+            self.y - 13,
+            detail.get("title") or "Finding",
+            390,
+            8,
+            "F2",
+            (1, 1, 1),
         )
         self.y -= 31
         self._wrapped_text(
             self.margin,
             self.y,
-            f"Endpoint: {detail.get('endpoint_url') or 'N/A'}",
+            f"Endpoint: {detail.get('endpoint_url') or detail.get('endpoint_path') or 'N/A'}",
             500,
             7,
             "F1",
             (0.39, 0.45, 0.55),
         )
-        self._wrapped_text(
-            self.margin,
-            self.y - 13,
-            self._clean(detail.get("description", ""))[:520],
-            500,
-            7,
-            "F1",
-        )
-        self.y -= 54
+        self.y -= 20
+        self._detail_block("Impact", detail.get("impact", ""), max_chars=520)
         if detail.get("reasoning"):
-            self._text(
-                self.margin, self.y, "Evidence reasoning", 8, "F2", (0.07, 0.12, 0.20)
+            self._detail_block(
+                "Reasoning",
+                " ".join(f"- {reason}" for reason in detail["reasoning"][:4]),
+                max_chars=760,
             )
-            self.y -= 12
-            for reason in detail["reasoning"][:3]:
-                self._wrapped_text(
-                    self.margin + 10, self.y, f"- {reason}", 475, 7, "F1"
-                )
-                self.y -= 12
-        self._text(self.margin, self.y, "Remediation", 8, "F2", (0.07, 0.12, 0.20))
-        self._wrapped_text(
-            self.margin + 10,
-            self.y - 12,
-            self._clean(detail.get("remediation", ""))[:360],
-            475,
-            7,
-            "F1",
+        self._detail_block(
+            "HTTP Evidence Request",
+            detail.get("http_request", ""),
+            size=6,
+            max_chars=1100,
         )
-        self.y -= 46
+        self._detail_block(
+            "HTTP Evidence Response",
+            detail.get("http_response", ""),
+            size=6,
+            max_chars=1100,
+        )
+
+        compliance = detail.get("deep_compliance") or {}
+        self._detail_block(
+            "Executive Risk Summary",
+            compliance.get("executive_risk_summary", ""),
+            max_chars=900,
+        )
+        self._detail_block(
+            "Potential Data Protection Impact",
+            self._format_data_impact(
+                compliance.get("potential_data_protection_impact") or {}
+            ),
+            max_chars=900,
+        )
+        self._detail_block(
+            "Business Impact",
+            self._format_list(compliance.get("business_impact") or []),
+            max_chars=760,
+        )
+        self._detail_block(
+            "Affected Assets",
+            self._format_assets(compliance.get("affected_assets") or []),
+            max_chars=760,
+        )
+        self._detail_block(
+            "Compliance Gap Analysis",
+            self._format_gap(compliance.get("gap_analysis") or {}),
+            max_chars=1000,
+        )
+        self._detail_block(
+            "Regulatory and Control Analysis",
+            self._format_regulatory(compliance.get("regulatory_analysis") or []),
+            max_chars=1500,
+        )
+        self._detail_block(
+            "Attack Scenario",
+            self._format_list(compliance.get("attack_scenario") or []),
+            max_chars=1000,
+        )
+        self._detail_block(
+            "Worst Case Scenario",
+            self._format_list(compliance.get("worst_case_scenario") or []),
+            max_chars=900,
+        )
+        confidence = compliance.get("compliance_confidence") or {}
+        priority = compliance.get("remediation_priority") or {}
+        self._detail_block(
+            "Compliance Confidence",
+            f"{confidence.get('level', 'N/A')} - {confidence.get('justification', '')}",
+            max_chars=520,
+        )
+        self._detail_block(
+            "Remediation Priority",
+            f"{priority.get('level', 'N/A')} - {priority.get('reason', '')}",
+            max_chars=520,
+        )
+
+        remediation_steps = detail.get("remediation_steps") or []
+        if remediation_steps:
+            remediation_text = " ".join(
+                f"{index}. {step}"
+                for index, step in enumerate(remediation_steps[:6], start=1)
+            )
+        else:
+            remediation_text = detail.get("remediation", "")
+        self._detail_block("Remediation", remediation_text, max_chars=760)
+        self._detail_block(
+            "Contoh Code Aman",
+            detail.get("secure_code_example", ""),
+            size=6,
+            max_chars=760,
+        )
+        self.y -= 8
+
+    def _detail_block(
+        self,
+        label: str,
+        text: Any,
+        *,
+        size: int = 7,
+        max_chars: int = 700,
+    ) -> None:
+        self._ensure(54)
+        self._text(self.margin, self.y, label, 8, "F2", (0.07, 0.12, 0.20))
+        self.y -= 12
+        line_count = self._wrapped_text(
+            self.margin + 10,
+            self.y,
+            self._clean(text)[:max_chars],
+            475,
+            size,
+            "F1",
+            (0.07, 0.12, 0.20),
+        )
+        self.y -= min(line_count, 8) * (size + 3) + 8
+
+    def _format_list(self, items: list[Any]) -> str:
+        return " ".join(f"{index}. {self._clean(item)}" for index, item in enumerate(items, start=1))
+
+    def _format_data_impact(self, impact: dict[str, Any]) -> str:
+        parts = [str(impact.get("summary") or "")]
+        labels = [
+            ("Personal", impact.get("personal_data") or []),
+            ("Authentication", impact.get("authentication_data") or []),
+            ("Financial", impact.get("financial_data") or []),
+            ("Session/Token", impact.get("session_or_token_data") or []),
+        ]
+        for label, values in labels:
+            if values:
+                parts.append(f"{label}: {', '.join(str(value) for value in values)}")
+        return " | ".join(part for part in parts if part)
+
+    def _format_assets(self, assets: list[dict[str, Any]]) -> str:
+        return " ".join(
+            f"{index}. {item.get('asset', 'Asset')} -> {item.get('impact', 'Impact')}"
+            for index, item in enumerate(assets, start=1)
+        )
+
+    def _format_gap(self, gap: dict[str, Any]) -> str:
+        observed = self._format_list(gap.get("observed") or [])
+        expected = self._format_list(gap.get("expected") or [])
+        return (
+            f"Observed: {observed} Expected: {expected} "
+            f"Gap: {gap.get('gap', '')}"
+        )
+
+    def _format_regulatory(self, rows: list[dict[str, Any]]) -> str:
+        rendered: list[str] = []
+        for row in rows[:8]:
+            rendered.append(
+                f"{row.get('framework')} {row.get('control')} | "
+                f"Status: {row.get('status')} | Confidence: {row.get('confidence')} | "
+                f"Requirement: {row.get('requirement')} | Observed: {row.get('observed')} | "
+                f"Potential Impact: {row.get('potential_impact')}"
+            )
+        return " ".join(rendered)
 
     def _paragraph(self, text: str) -> None:
         self._wrapped_text(

@@ -240,6 +240,10 @@ export interface ScanStartPayload {
     weak_jwt_secrets: string[];
     admin_paths: string[];
     modern_vuln_bank_probes: boolean;
+    ssrf_canary_urls?: string[];
+    ssrf_canary_markers?: string[];
+    ssrf_allowed_hosts?: string[];
+    business_logic_validation?: boolean;
   };
 }
 

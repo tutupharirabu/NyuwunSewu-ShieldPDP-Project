@@ -178,6 +178,74 @@
       font-size: 11px;
       white-space: pre-wrap;
     }
+    .evidence-meta {
+      margin-top: 6px;
+      color: #667085;
+      font-size: 11px;
+      overflow-wrap: anywhere;
+    }
+    .analysis-grid {
+      display: grid;
+      gap: 8px;
+      border: 1px solid #d8e1ea;
+      border-radius: 8px;
+      padding: 10px;
+      background: #ffffff;
+    }
+    .analysis-grid strong {
+      display: block;
+      margin-bottom: 4px;
+      color: #101828;
+      font-size: 11px;
+      letter-spacing: 0;
+    }
+    .analysis-grid p {
+      margin: 0;
+    }
+    .analysis-list {
+      margin: 4px 0 0 18px;
+      padding: 0;
+    }
+    .analysis-list li {
+      margin-bottom: 3px;
+    }
+    .impact-columns {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .impact-column {
+      border: 1px solid #e4e9f0;
+      border-radius: 6px;
+      padding: 8px;
+      background: #f8fafc;
+    }
+    .regulatory-card {
+      border: 1px solid #e4e9f0;
+      border-radius: 6px;
+      padding: 8px;
+      background: #fbfdff;
+    }
+    .regulatory-card + .regulatory-card {
+      margin-top: 6px;
+    }
+    .regulatory-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin: 4px 0 6px;
+    }
+    .code-box {
+      border: 1px solid #d8e1ea;
+      border-radius: 8px;
+      padding: 10px;
+      background: #111827;
+      color: #f8fafc;
+      overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      white-space: pre-wrap;
+    }
     @media print {
       body { background: white; }
       .report-cover { margin: 0 0 20px; }
@@ -277,7 +345,7 @@
           <th>Severity</th>
           <th>Exploit</th>
           <th>Endpoint</th>
-          <th>Mode / Evidence</th>
+          <th>Mode / Result</th>
         </tr>
       </thead>
       <tbody>
@@ -337,7 +405,8 @@
         </div>
         <div class="finding-body">
           <p><strong>Endpoint:</strong> {{ finding.endpoint_url or finding.endpoint_path or "N/A" }}</p>
-          <p>{{ finding.description }}</p>
+          <h4>Impact</h4>
+          <p>{{ finding.impact }}</p>
           <h4>Reasoning</h4>
           <ul>
             {% for reason in finding.reasoning %}
@@ -346,16 +415,154 @@
               <li>No validation reasoning recorded.</li>
             {% endfor %}
           </ul>
-          <h4>Evidence Summary</h4>
-          <div class="evidence-box">{{ finding.evidence|json_preview }}</div>
-          <h4>Compliance</h4>
-          {% for item in finding.compliance %}
-            <span class="badge">{{ item.framework }} {{ item.article_or_control }}</span>
-          {% else %}
-            <span class="badge">No mapping</span>
-          {% endfor %}
+          <h4>HTTP Evidence Request</h4>
+          <pre class="evidence-box">{{ finding.http_request }}</pre>
+          <h4>HTTP Evidence Response</h4>
+          <pre class="evidence-box">{{ finding.http_response }}</pre>
+          {% if finding.evidence_id or finding.evidence_hash %}
+            <div class="evidence-meta">
+              {% if finding.evidence_id %}Evidence ID: {{ finding.evidence_id }}{% endif %}
+              {% if finding.evidence_hash %} Hash: {{ finding.evidence_hash }}{% endif %}
+            </div>
+          {% endif %}
+          <h4>Compliance Analysis</h4>
+          <div class="analysis-grid">
+            <div>
+              <strong>EXECUTIVE RISK SUMMARY</strong>
+              <p>{{ finding.deep_compliance.executive_risk_summary }}</p>
+            </div>
+            <div>
+              <strong>CONFIRMED TECHNICAL EVIDENCE</strong>
+              <ul class="analysis-list">
+                {% for item in finding.deep_compliance.confirmed_technical_evidence %}
+                  <li>{{ item }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+            <div>
+              <strong>POTENTIAL DATA PROTECTION IMPACT</strong>
+              <p>{{ finding.deep_compliance.potential_data_protection_impact.summary }}</p>
+              <div class="impact-columns">
+                <div class="impact-column">
+                  <strong>Personal Data</strong>
+                  {% for item in finding.deep_compliance.potential_data_protection_impact.personal_data %}
+                    <span class="badge">{{ item }}</span>
+                  {% else %}
+                    <span class="badge">No category confirmed</span>
+                  {% endfor %}
+                </div>
+                <div class="impact-column">
+                  <strong>Authentication Data</strong>
+                  {% for item in finding.deep_compliance.potential_data_protection_impact.authentication_data %}
+                    <span class="badge">{{ item }}</span>
+                  {% else %}
+                    <span class="badge">No category confirmed</span>
+                  {% endfor %}
+                </div>
+                <div class="impact-column">
+                  <strong>Financial Data</strong>
+                  {% for item in finding.deep_compliance.potential_data_protection_impact.financial_data %}
+                    <span class="badge">{{ item }}</span>
+                  {% else %}
+                    <span class="badge">No category confirmed</span>
+                  {% endfor %}
+                </div>
+                <div class="impact-column">
+                  <strong>Session / Token Data</strong>
+                  {% for item in finding.deep_compliance.potential_data_protection_impact.session_or_token_data %}
+                    <span class="badge">{{ item }}</span>
+                  {% else %}
+                    <span class="badge">No category confirmed</span>
+                  {% endfor %}
+                </div>
+              </div>
+            </div>
+            <div>
+              <strong>BUSINESS IMPACT</strong>
+              <ul class="analysis-list">
+                {% for item in finding.deep_compliance.business_impact %}
+                  <li>{{ item }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+            <div>
+              <strong>AFFECTED ASSETS</strong>
+              <ul class="analysis-list">
+                {% for item in finding.deep_compliance.affected_assets %}
+                  <li>{{ item.asset }} &rarr; {{ item.impact }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+            <div>
+              <strong>COMPLIANCE GAP ANALYSIS</strong>
+              <p><strong>Observed State</strong></p>
+              <ul class="analysis-list">
+                {% for item in finding.deep_compliance.gap_analysis.observed %}
+                  <li>{{ item }}</li>
+                {% endfor %}
+              </ul>
+              <p><strong>Expected State</strong></p>
+              <ul class="analysis-list">
+                {% for item in finding.deep_compliance.gap_analysis.expected %}
+                  <li>{{ item }}</li>
+                {% endfor %}
+              </ul>
+              <p><strong>Gap</strong></p>
+              <p>{{ finding.deep_compliance.gap_analysis.gap }}</p>
+            </div>
+            <div>
+              <strong>REGULATORY & CONTROL ANALYSIS</strong>
+              {% for item in finding.deep_compliance.regulatory_analysis %}
+                <div class="regulatory-card">
+                  <strong>{{ item.framework }} - {{ item.control }}</strong>
+                  <div class="regulatory-meta">
+                    <span class="badge">{{ item.status }}</span>
+                    <span class="badge">Confidence: {{ item.confidence }}</span>
+                  </div>
+                  <p><strong>Requirement:</strong> {{ item.requirement }}</p>
+                  <p><strong>Observed:</strong> {{ item.observed }}</p>
+                  <p><strong>Potential Impact:</strong> {{ item.potential_impact }}</p>
+                  <p><strong>Reason:</strong> {{ item.reason }}</p>
+                </div>
+              {% else %}
+                <p>No regulatory mapping generated.</p>
+              {% endfor %}
+            </div>
+            <div>
+              <strong>ATTACK SCENARIO</strong>
+              <ol class="analysis-list">
+                {% for step in finding.deep_compliance.attack_scenario %}
+                  <li>{{ step }}</li>
+                {% endfor %}
+              </ol>
+            </div>
+            <div>
+              <strong>WORST CASE SCENARIO</strong>
+              <ul class="analysis-list">
+                {% for item in finding.deep_compliance.worst_case_scenario %}
+                  <li>{{ item }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+            <div>
+              <strong>COMPLIANCE CONFIDENCE</strong>
+              <p><strong>{{ finding.deep_compliance.compliance_confidence.level }}</strong> - {{ finding.deep_compliance.compliance_confidence.justification }}</p>
+            </div>
+            <div>
+              <strong>REMEDIATION PRIORITY</strong>
+              <p><strong>{{ finding.deep_compliance.remediation_priority.level }}</strong> - {{ finding.deep_compliance.remediation_priority.reason }}</p>
+            </div>
+          </div>
           <h4>Remediation</h4>
-          <p>{{ finding.remediation }}</p>
+          <ol>
+            {% for step in finding.remediation_steps %}
+              <li>{{ step }}</li>
+            {% else %}
+              <li>{{ finding.remediation }}</li>
+            {% endfor %}
+          </ol>
+          <h4>Contoh Code Aman</h4>
+          <pre class="code-box">{{ finding.secure_code_example }}</pre>
         </div>
       </article>
     {% else %}

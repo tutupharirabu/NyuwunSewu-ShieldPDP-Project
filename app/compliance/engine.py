@@ -141,6 +141,22 @@ class ComplianceMappingEngine:
     def _is_cors(normalized: str) -> bool:
         return "cors_credentials_misconfiguration" in normalized
 
+    @staticmethod
+    def _is_ssrf(normalized: str) -> bool:
+        return "ssrf" in normalized or "server-side request forgery" in normalized
+
+    @staticmethod
+    def _is_business_logic(normalized: str) -> bool:
+        return (
+            "negative_amount" in normalized
+            or "business_logic" in normalized
+            or "funds" in normalized
+        )
+
+    @staticmethod
+    def _is_rate_limit(normalized: str) -> bool:
+        return "rate_limit" in normalized or "rate-limit" in normalized
+
     # ------------------------------------------------------------------
     # Main mapping logic
     # ------------------------------------------------------------------
@@ -308,6 +324,54 @@ class ComplianceMappingEngine:
                         "Credentialed cross-origin access may expose protected application responses.",
                         "Origin trust configuration requires remediation evidence.",
                         "Untrusted web origins could read user data in an authenticated browser context.",
+                    ),
+                ]
+            )
+
+        # --- SSRF / server-side fetch validation ---
+        if self._is_ssrf(normalized):
+            impacts.extend(
+                [
+                    self._pasal35_impact(normalized),
+                    self._pasal46_impact(normalized),
+                    self._pasal57_impact(normalized),
+                    ComplianceImpact(
+                        "OWASP ASVS",
+                        "V12 File and Resources / V14 Configuration",
+                        "Server-side fetch controls may allow access to internal resources.",
+                        "Network egress and resource access control evidence may be insufficient.",
+                        "Internal service exposure can lead to data disclosure or pivot risk.",
+                    ),
+                ]
+            )
+
+        # --- Business logic / negative amount impact ---
+        if self._is_business_logic(normalized):
+            impacts.extend(
+                [
+                    self._pasal35_impact(normalized),
+                    self._pasal57_impact(normalized),
+                    ComplianceImpact(
+                        "OWASP ASVS",
+                        "V1 Architecture / V5 Validation",
+                        "Business invariants and amount validation require server-side enforcement.",
+                        "Financial workflow controls may lack auditable validation evidence.",
+                        "Invalid transactions can create direct financial, reconciliation, and trust impact.",
+                    ),
+                ]
+            )
+
+        # --- Rate limiting / role bucket comparison ---
+        if self._is_rate_limit(normalized):
+            impacts.extend(
+                [
+                    self._pasal35_impact(normalized),
+                    ComplianceImpact(
+                        "OWASP ASVS",
+                        "V2 Authentication / V7 Error Handling and Logging",
+                        "Authenticated identity and quota enforcement may not be bound consistently.",
+                        "Audit evidence for rate-limit decisions may be incomplete or misleading.",
+                        "Incorrect quota buckets can enable abuse or improper service denial.",
                     ),
                 ]
             )

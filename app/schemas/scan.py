@@ -54,6 +54,10 @@ class ExploitChainInput(BaseModel):
         max_length=50,
     )
     modern_vuln_bank_probes: bool = True
+    ssrf_canary_urls: list[str] = Field(default_factory=list, max_length=10)
+    ssrf_canary_markers: list[str] = Field(default_factory=list, max_length=10)
+    ssrf_allowed_hosts: list[str] = Field(default_factory=list, max_length=10)
+    business_logic_validation: bool = False
 
 
 class ScanStartRequest(BaseModel):

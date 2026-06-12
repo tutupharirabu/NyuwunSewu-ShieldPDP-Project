@@ -3,12 +3,38 @@ import asyncio
 from app.validation.bola import BOLAValidator
 from app.validation.access_matrix import AccessControlMatrixValidator
 from app.validation.auth import AuthValidator
+from app.validation.attack_knowledge import AttackKnowledgeEngine
 from app.validation.exploit_chains import ActiveExploitChainValidator
+from app.validation.impact_validators import (
+    BusinessLogicImpactEvaluator,
+    RateLimitRoleValidator,
+    SSRFInBandValidator,
+)
 from app.validation.path_traversal import PathTraversalValidator
 from app.validation.reflected_html import ReflectedHTMLInjectionValidator
 from app.validation.sqli import LightweightSQLiValidator
 from app.validation.types import HttpObservation
 from app.recon import CrawledEndpoint
+
+
+def observation(
+    body: str,
+    *,
+    url: str = "https://example.com/api/proof",
+    method: str = "GET",
+    status: int = 200,
+) -> HttpObservation:
+    return HttpObservation(
+        url=url,
+        method=method,
+        status_code=status,
+        elapsed_ms=3,
+        headers={"content-type": "application/json"},
+        body_sample=body,
+        content_length=len(body),
+        request_headers={"user-agent": "NyuwunSewu-MVP/1.0"},
+        response_reason="OK",
+    )
 
 
 def test_sqli_dbms_detection_is_specific():
@@ -41,6 +67,194 @@ def test_sqli_recognizes_json_login_flow_and_token_transition_only_on_login_path
     assert validator._javascript_json_login_action(login) == "https://example.com/login"
     assert validator._javascript_json_login_action(settings) is None
     assert validator._looks_authenticated(token_response)
+
+
+def test_attack_knowledge_marks_login_as_sqli_auth_bypass_candidate():
+    engine = AttackKnowledgeEngine()
+    endpoint = CrawledEndpoint(
+        url="https://example.com/login",
+        method="GET",
+        response_body_sample='fetch("/login", {method:"POST", body: JSON.stringify({username, password})})',
+        forms=[
+            {
+                "action": "https://example.com/login",
+                "method": "POST",
+                "fields": [
+                    {"name": "username", "type": "text"},
+                    {"name": "password", "type": "password"},
+                ],
+            }
+        ],
+    )
+
+    [candidate] = [
+        item for item in engine.candidates(endpoint) if item.technique == "sqli_auth_bypass"
+    ]
+
+    assert candidate.risk in {"medium", "high"}
+    assert "authenticated-state proof" in " ".join(candidate.prerequisites)
+    assert any("Login/session" in reason for reason in candidate.reasoning)
+
+
+def test_attack_knowledge_marks_url_import_as_ssrf_candidate():
+    engine = AttackKnowledgeEngine()
+    endpoint = CrawledEndpoint(
+        url="https://example.com/upload_profile_picture_url",
+        method="POST",
+        forms=[
+            {
+                "action": "https://example.com/upload_profile_picture_url",
+                "method": "POST",
+                "fields": [{"name": "image_url", "type": "url"}],
+            }
+        ],
+    )
+
+    candidates = engine.classification_dicts(endpoint)
+
+    assert any(item["classification"] == "attack_candidate:ssrf_url_fetch" for item in candidates)
+    ssrf = next(item for item in candidates if item["classification"] == "attack_candidate:ssrf_url_fetch")
+    assert "loopback" in " ".join(ssrf["prerequisites"]).lower()
+    assert "No external callback" in " ".join(ssrf["safe_validation"])
+
+
+def test_attack_knowledge_marks_negative_amount_business_logic_candidate():
+    engine = AttackKnowledgeEngine()
+    endpoint = CrawledEndpoint(
+        url="https://example.com/api/transfers",
+        method="POST",
+        forms=[
+            {
+                "action": "https://example.com/api/transfers",
+                "method": "POST",
+                "fields": [
+                    {"name": "from_account", "type": "text"},
+                    {"name": "to_account", "type": "text"},
+                    {"name": "amount", "type": "number"},
+                ],
+            }
+        ],
+    )
+
+    [candidate] = [
+        item
+        for item in engine.candidates(endpoint)
+        if item.technique == "negative_amount_business_logic"
+    ]
+
+    assert candidate.risk == "high"
+    assert "test accounts" in " ".join(candidate.prerequisites)
+    assert "before/after state" in " ".join(candidate.evidence_needed).lower()
+
+
+def test_attack_knowledge_marks_rate_limit_role_candidate_without_flooding():
+    engine = AttackKnowledgeEngine()
+    endpoint = CrawledEndpoint(
+        url="https://example.com/api/ai/rate-limit-status",
+        method="GET",
+        response_body_sample='{"role":"unauthenticated","remaining":10,"limit":20}',
+    )
+
+    [candidate] = [
+        item
+        for item in engine.candidates(endpoint)
+        if item.technique == "rate_limit_role_misclassification"
+    ]
+
+    assert candidate.risk in {"medium", "high"}
+    assert "Do not flood" in " ".join(candidate.safe_validation)
+
+
+def test_ssrf_inband_validator_requires_operator_canary_marker():
+    validator = SSRFInBandValidator.__new__(SSRFInBandValidator)
+    endpoint = CrawledEndpoint(url="https://example.com/upload_profile_picture_url")
+
+    missing = validator._confirmed_result(
+        endpoint=endpoint,
+        field_name="image_url",
+        canary_url="http://127.0.0.1:5000/internal/secret",
+        markers=["NYUWUNSEWU_CANARY"],
+        observation=observation('{"note":"ordinary response"}', method="POST"),
+        request_url="https://example.com/upload_profile_picture_url",
+        request_body='{"image_url":"http://127.0.0.1:5000/internal/secret"}',
+    )
+    confirmed = validator._confirmed_result(
+        endpoint=endpoint,
+        field_name="image_url",
+        canary_url="http://127.0.0.1:5000/internal/secret",
+        markers=["NYUWUNSEWU_CANARY"],
+        observation=observation('{"note":"NYUWUNSEWU_CANARY internal proof"}', method="POST"),
+        request_url="https://example.com/upload_profile_picture_url",
+        request_body='{"image_url":"http://127.0.0.1:5000/internal/secret"}',
+    )
+
+    assert missing is None
+    assert confirmed is not None
+    assert confirmed.finding_type == "ssrf_inband_url_fetch"
+    assert confirmed.exploitability_assessment == "CONFIRMED_EXPLOIT"
+
+
+def test_ssrf_canary_blocks_metadata_and_allows_loopback_or_allowlist():
+    validator = SSRFInBandValidator.__new__(SSRFInBandValidator)
+
+    assert validator._canary_allowed("http://127.0.0.1:5000/proof", {})
+    assert validator._canary_allowed(
+        "https://canary.internal/proof",
+        {"ssrf_allowed_hosts": ["canary.internal"]},
+    )
+    assert not validator._canary_allowed("http://169.254.169.254/latest/meta-data", {})
+    assert not validator._canary_allowed("https://attacker.example/proof", {})
+
+
+def test_rate_limit_role_validator_confirms_auth_role_misclassification():
+    validator = RateLimitRoleValidator.__new__(RateLimitRoleValidator)
+    endpoint = CrawledEndpoint(url="https://example.com/api/ai/rate-limit-status")
+
+    result = validator._mismatch_result(
+        endpoint,
+        observation('{"role":"unauthenticated","remaining":10,"limit":20}'),
+        observation('{"role":"unauthenticated","remaining":10,"limit":20}'),
+    )
+
+    assert result is not None
+    assert result.finding_type == "rate_limit_role_misclassification"
+    assert result.exploitability_assessment == "VALIDATED_EXPOSURE"
+    assert "No quota exhaustion" in " ".join(result.reasoning)
+
+
+def test_business_logic_evaluator_confirms_negative_amount_reverse_movement_only():
+    evaluator = BusinessLogicImpactEvaluator()
+    proof = observation(
+        '{"status":"success","source_balance":110,"destination_balance":90}',
+        url="https://example.com/api/transfers",
+        method="POST",
+    )
+
+    confirmed = evaluator.negative_amount_transfer_result(
+        endpoint_url="https://example.com/api/transfers",
+        amount=-10,
+        source_before=100,
+        source_after=110,
+        destination_before=100,
+        destination_after=90,
+        observation=proof,
+        request_body='{"from":"A","to":"B","amount":-10}',
+    )
+    not_impact = evaluator.negative_amount_transfer_result(
+        endpoint_url="https://example.com/api/transfers",
+        amount=-10,
+        source_before=100,
+        source_after=90,
+        destination_before=100,
+        destination_after=110,
+        observation=proof,
+        request_body='{"from":"A","to":"B","amount":-10}',
+    )
+
+    assert confirmed is not None
+    assert confirmed.finding_type == "negative_amount_business_logic"
+    assert confirmed.exploitability_assessment == "CONFIRMED_EXPLOIT"
+    assert not_impact is None
 
 
 def test_jwt_tamper_negative_control_changes_claim_without_new_signature():
