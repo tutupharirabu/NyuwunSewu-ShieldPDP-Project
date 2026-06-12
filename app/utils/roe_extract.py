@@ -54,7 +54,10 @@ def extract_roe_text(filename: str, raw: bytes) -> ExtractedRoe:
     if truncated:
         text = text[:ROE_MAX_CHARS]
 
-    warning = len(text.strip()) < ROE_MIN_CHARS and len(raw) > ROE_IMAGE_PDF_BYTES
+    is_pdf = filename.lower().endswith(".pdf")
+    near_empty = len(text.strip()) < ROE_MIN_CHARS
+    substantive_input = is_pdf or len(raw) > ROE_IMAGE_PDF_BYTES
+    warning = truncated or (near_empty and substantive_input)
     return ExtractedRoe(
         text=text,
         char_count=len(text),

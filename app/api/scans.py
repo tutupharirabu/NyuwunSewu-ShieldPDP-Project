@@ -15,12 +15,12 @@ from app.schemas.scan import (
     ScanStopRequest,
 )
 from app.utils.roe_extract import UnsupportedRoeFile, extract_roe_text
-
-ROE_MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 from app.services.scan_service import ScanService, run_scan_by_id
 from app.utils.redaction import redact_headers
 
 router = APIRouter(tags=["scans"])
+
+ROE_MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 
 
 @router.post("/scan/start", response_model=ScanStartResponse)

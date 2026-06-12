@@ -33,3 +33,19 @@ def test_empty_large_pdf_triggers_extraction_warning():
 def test_unsupported_extension_rejected():
     with pytest.raises(UnsupportedRoeFile):
         extract_roe_text("scope.docx", b"...")
+
+
+def test_small_image_only_pdf_triggers_warning():
+    # A tiny unparseable PDF (< 10 KB) must still trigger extraction_warning
+    # because it is a .pdf — the old guard would have missed this.
+    tiny_pdf = b"%PDF-1.4\n" + b"0" * 100
+    result = extract_roe_text("scope.pdf", tiny_pdf)
+    assert result.extraction_warning is True
+
+
+def test_truncation_sets_warning():
+    # Text longer than ROE_MAX_CHARS → truncated=True AND extraction_warning=True.
+    raw = ("x" * (ROE_MAX_CHARS + 1)).encode()
+    result = extract_roe_text("roe.txt", raw)
+    assert result.truncated is True
+    assert result.extraction_warning is True
