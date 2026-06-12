@@ -196,6 +196,41 @@ class _ReportingMixin:
         await self.session.commit()
         await self._dispatch_webhooks(scan, "scan.failed")
 
+    async def _build_webhook_payload(self, scan: Scan, event: str) -> dict:
+        scan_stats = scan.stats or {}
+        target = (
+            await self.session.get(Target, scan.target_id)
+            if scan.target_id
+            else None
+        )
+        roe_text = None
+        if scan.roe_document_id:
+            from app.models import RoeDocument
+
+            doc = await self.session.get(RoeDocument, scan.roe_document_id)
+            roe_text = doc.extracted_text if doc else None
+        if roe_text is not None:
+            logger.info(
+                "Webhook scan %s carries roe_text of %d chars", scan.id, len(roe_text)
+            )
+        return {
+            "event": event,
+            "scan_id": scan.id,
+            "target_url": target.base_url if target else None,
+            "project_id": scan.project_id,
+            "status": scan.status,
+            "stats": scan_stats,
+            "error": scan.error,
+            "findings_count": scan_stats.get("findings", 0),
+            "endpoints_count": scan_stats.get("endpoints", 0),
+            "engagement_mode": scan.engagement_mode,
+            "roe_basis": scan.roe_basis,
+            "roe_text": roe_text,
+            "finished_at": scan.finished_at.isoformat()
+            if scan.finished_at
+            else None,
+        }
+
     async def _dispatch_webhooks(self, scan: Scan, event: str) -> None:
         """Fire matching webhook subscriptions for a scan lifecycle event."""
         try:
@@ -212,26 +247,7 @@ class _ReportingMixin:
             )
             subscriptions = list(result.scalars().all())
 
-            scan_stats = scan.stats or {}
-            target = (
-                await self.session.get(Target, scan.target_id)
-                if scan.target_id
-                else None
-            )
-            payload = {
-                "event": event,
-                "scan_id": scan.id,
-                "target_url": target.base_url if target else None,
-                "project_id": scan.project_id,
-                "status": scan.status,
-                "stats": scan_stats,
-                "error": scan.error,
-                "findings_count": scan_stats.get("findings", 0),
-                "endpoints_count": scan_stats.get("endpoints", 0),
-                "finished_at": scan.finished_at.isoformat()
-                if scan.finished_at
-                else None,
-            }
+            payload = await self._build_webhook_payload(scan, event)
 
             delivery_errors: list[str] = []
             for sub in subscriptions:
