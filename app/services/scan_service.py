@@ -38,11 +38,13 @@ from app.services.risk_engine import RiskPrioritizationEngine
 from app.utils.redaction import redact_text, sanitize_json
 from app.validation.access_matrix import AccessControlMatrixValidator, RoleContext
 from app.validation.api_exposure import SafeAPIExposureValidator
+from app.validation.attack_knowledge import AttackKnowledgeEngine
 from app.validation.auth import AuthValidator
 from app.validation.bola import BOLAValidator
 from app.validation.cors import CorsValidationEngine
 from app.validation.data_rights import DataRightsValidationEngine
 from app.validation.exploit_chains import ActiveExploitChainValidator
+from app.validation.impact_validators import RateLimitRoleValidator, SSRFInBandValidator
 from app.validation.path_traversal import PathTraversalValidator
 from app.validation.reflected_html import ReflectedHTMLInjectionValidator
 from app.validation.sqli import LightweightSQLiValidator
@@ -77,6 +79,7 @@ class ScanRunner(_ScoringMixin, _ReportingMixin):
         self.reporting = ReportingEngine()
         self.discovery = DiscoveryValidationService()
         self.api_exposure = SafeAPIExposureValidator()
+        self.attack_knowledge = AttackKnowledgeEngine()
 
     async def run(self, scan_id: str, runtime_options: dict[str, Any]) -> None:
         scan = await self.session.get(Scan, scan_id)
@@ -367,6 +370,17 @@ class ScanRunner(_ScoringMixin, _ReportingMixin):
             crawled.url, crawled.method, crawled.forms
         )
         endpoint_risk = max((item.risk_score for item in classifications), default=0.0)
+        knowledge_classifications = self.attack_knowledge.classification_dicts(crawled)
+        endpoint_risk = max(
+            endpoint_risk,
+            max(
+                (
+                    float(item.get("risk_score") or 0)
+                    for item in knowledge_classifications
+                ),
+                default=0.0,
+            ),
+        )
         endpoint = Endpoint(
             organization_id=scan.organization_id,
             project_id=scan.project_id,
@@ -390,7 +404,8 @@ class ScanRunner(_ScoringMixin, _ReportingMixin):
                     "reasoning": item.reasoning,
                 }
                 for item in classifications
-            ],
+            ]
+            + knowledge_classifications,
             risk_score=endpoint_risk,
         )
         self.session.add(endpoint)
@@ -522,8 +537,16 @@ class ScanRunner(_ScoringMixin, _ReportingMixin):
             CorsValidationEngine(
                 policy, recon.scope_guard, recon.rate_limiter
             ).validate(crawled, anonymous_session),
+            RateLimitRoleValidator(
+                policy, recon.scope_guard, recon.rate_limiter
+            ).validate(crawled, http_session, anonymous_session, primary_headers),
         ]
         exploit_options = runtime_options.get("exploit_chains") or {}
+        validators.append(
+            SSRFInBandValidator(
+                policy, recon.scope_guard, recon.rate_limiter
+            ).validate(crawled, http_session, primary_headers, exploit_options)
+        )
         if exploit_options.get("enabled") and not runtime_options.get(
             "_exploit_chains_checked"
         ):
@@ -636,6 +659,9 @@ class ScanRunner(_ScoringMixin, _ReportingMixin):
                 "jwt_forge_endpoint_exposed",
                 "token_storage_xss_account_takeover_chain",
                 "sqli_auth_bypass",
+                "ssrf_inband_url_fetch",
+                "negative_amount_business_logic",
+                "rate_limit_role_misclassification",
                 "unauthenticated_sensitive_api_exposure",
             },
             public_exposure=True,
