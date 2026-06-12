@@ -1,12 +1,19 @@
 import re
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.rbac import RoleName, default_permissions_for
 from app.core.security import hash_password, utcnow
 from app.models import Organization, Role, Scan, ScanStatus, User
+
+# Arbitrary app-wide constant. When the API runs with multiple uvicorn workers,
+# each worker executes the startup lifespan (and thus seed_defaults) concurrently.
+# Role.name and (organization_id, email) are unique, so a naive race would crash
+# a worker on a duplicate INSERT. A Postgres transaction-level advisory lock
+# serializes seeding across workers; it is released automatically on commit.
+_SEED_ADVISORY_LOCK_KEY = 4_991_001
 
 
 def slugify(value: str) -> str:
@@ -16,6 +23,12 @@ def slugify(value: str) -> str:
 
 async def seed_defaults(session: AsyncSession) -> None:
     settings = get_settings()
+
+    if not settings.database_url.startswith("sqlite"):
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"),
+            {"key": _SEED_ADVISORY_LOCK_KEY},
+        )
 
     roles_by_name: dict[str, Role] = {}
     for role_name in RoleName:

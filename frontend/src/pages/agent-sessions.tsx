@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Ban,
@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { useApi } from "@/hooks/use-api";
+import { usePoll } from "@/hooks/use-poll";
 import { api } from "@/lib/api";
 import { cn, compactId, formatRelativeTime } from "@/lib/utils";
 
@@ -199,11 +200,9 @@ export function AgentSessionsPage() {
   const selectedSession =
     sessions?.find((s) => s.id === selectedSessionId) ?? null;
 
-  useEffect(() => {
-    if (!autoRefresh) return;
-    const interval = setInterval(refresh, 3000);
-    return () => clearInterval(interval);
-  }, [autoRefresh, refresh]);
+  // Poll every 3s while auto-refresh is on, but skip ticks while a refresh is
+  // still in flight so a slow backend isn't buried under stacked requests.
+  usePoll(refresh, 3000, autoRefresh);
 
   const handleApprove = async (sessionId: string, approved: boolean) => {
     try {

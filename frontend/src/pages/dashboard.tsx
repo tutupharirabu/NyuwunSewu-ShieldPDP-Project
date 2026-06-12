@@ -26,7 +26,7 @@ import {
   Workflow,
   type LucideIcon,
 } from "lucide-react";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
@@ -50,6 +50,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useApi } from "@/hooks/use-api";
+import { usePoll } from "@/hooks/use-poll";
 import { api } from "@/lib/api";
 import {
   apiDateTimestamp,
@@ -1370,19 +1371,10 @@ export function DashboardPage() {
       };
     }, [], "dashboard");
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (!document.hidden) void refresh();
-    }, 30000);
-    const onVisibility = () => {
-      if (!document.hidden) void refresh();
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, [refresh]);
+  // Poll every 30s, but never overlap: the aggregate pulls ~9 endpoints
+  // (including a multi-MB /scans payload), so stacking refreshes would bury a
+  // single backend worker under an ever-growing request backlog.
+  usePoll(refresh, 30000, true, true);
 
   const activity = useMemo<ActivityItem[]>(() => {
     if (!data) return [];

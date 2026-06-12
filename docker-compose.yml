@@ -34,6 +34,9 @@ services:
       AGENT_SECRET: ${PHANTOM_AGENT_SECRET}
       BOOTSTRAP_ADMIN_PASSWORD: ChangeMe123!
       ALLOW_PRIVATE_TARGETS: "false"
+      # uvicorn worker processes. 4 is comfortable on an 8GB host alongside
+      # postgres/redis/celery; tune via env if RAM is tighter.
+      WEB_CONCURRENCY: "4"
     ports:
       - "8000:8000"
     depends_on:
