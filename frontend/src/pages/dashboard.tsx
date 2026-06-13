@@ -50,7 +50,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useApi } from "@/hooks/use-api";
-import { usePoll } from "@/hooks/use-poll";
+import { useDashboardData } from "@/hooks/use-dashboard-data";
 import { api } from "@/lib/api";
 import {
   apiDateTimestamp,
@@ -73,19 +73,6 @@ import type {
 } from "@/types/api";
 
 type Severity = "critical" | "high" | "medium" | "low" | "info";
-
-interface DashboardData {
-  dashboard: DashboardResponse;
-  findings: FindingResponse[];
-  scans: ScanSummary[];
-  remediations: RemediationSummary[];
-  targets: TargetSummary[];
-  mappings: ComplianceRow[];
-  auditLogs: AuditLogResponse[];
-  reports: ReportResponse[];
-  focusEndpoints: EndpointInventory[];
-  focusScan: ScanSummary | null;
-}
 
 interface PrivacySignal {
   name: string;
@@ -1322,59 +1309,10 @@ function ExposureEstimate({
 
 export { DashboardPage as default };
 export function DashboardPage() {
-  const { data, loading, error, refresh } =
-    useApi(async (): Promise<DashboardData> => {
-      const [
-        dashboard,
-        findings,
-        scans,
-        remediations,
-        targets,
-        compliance,
-        auditLogs,
-        reports,
-      ] = await Promise.all([
-        api.dashboard(),
-        api.findings(undefined, undefined, 100),
-        api.scans(),
-        api.remediations().catch(() => [] as RemediationSummary[]),
-        api.targets().catch(() => [] as TargetSummary[]),
-        api.compliance().catch(() => ({
-          organization_id: "",
-          mappings: [] as ComplianceRow[],
-        })),
-        api.auditLogs().catch(() => [] as AuditLogResponse[]),
-        api.reports().catch(() => [] as ReportResponse[]),
-      ]);
-      const focusScan =
-        scans.find((scan) =>
-          ["queued", "running", "stopping"].includes(scan.status),
-        ) ??
-        scans[0] ??
-        null;
-      const focusEndpoints = focusScan
-        ? await api
-            .scanEndpoints(focusScan.id)
-            .catch(() => [] as EndpointInventory[])
-        : [];
-      return {
-        dashboard,
-        findings,
-        scans,
-        remediations,
-        targets,
-        mappings: compliance.mappings,
-        auditLogs,
-        reports,
-        focusEndpoints,
-        focusScan,
-      };
-    }, [], "dashboard");
-
-  // Poll every 30s, but never overlap: the aggregate pulls ~9 endpoints
-  // (including a multi-MB /scans payload), so stacking refreshes would bury a
-  // single backend worker under an ever-growing request backlog.
-  usePoll(refresh, 30000, true, true);
+  // Tiered loading: paints on the critical data (dashboard + scans) and streams
+  // the heavier panels in, instead of one Promise.all blocking on the slowest
+  // endpoint and re-polling all ~9 endpoints every 30s. See use-dashboard-data.
+  const { data, loading, error } = useDashboardData();
 
   const activity = useMemo<ActivityItem[]>(() => {
     if (!data) return [];
