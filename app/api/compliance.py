@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -158,53 +158,27 @@ async def create_breach_notification(
             "severity": f.severity,
             "title": f.title,
             "evidence_summary": f.evidence_summary,
+            "compliance": f.compliance,
         }
         for f in findings
     ]
 
-    assessment = BreachNotificationService.detect_breach(finding_dicts)
-
     # Get organization name
     org_stmt = select(Organization).where(Organization.id == user.organization_id)
-    org_result = await session.execute(org_stmt)
-    org = org_result.scalar_one_or_none()
+    org = (await session.execute(org_stmt)).scalar_one_or_none()
     org_name = org.name if org else ""
 
-    # Generate notification text
-    notification_text = BreachNotificationService.generate_notification_text(
-        assessment, organization_name=org_name
-    )
-
-    now = datetime.now(timezone.utc)
-    sla_deadline = now + timedelta(
-        hours=BreachNotificationService.NOTIFICATION_DEADLINE_HOURS
-    )
-
-    # Create breach notification record
-    breach = BreachNotification(
+    breach = await BreachNotificationService.persist_breach(
+        session,
         organization_id=user.organization_id,
-        finding_ids=req.finding_ids,
-        breach_title=assessment.breach_type or "Data breach assessment",
-        description=assessment.description,
-        breach_type=assessment.breach_type,
-        severity=assessment.severity,
-        status="assessing",
-        detected_at=now,
-        sla_deadline=sla_deadline,
-        pii_types_affected=assessment.pii_types,
-        data_subjects_estimate=assessment.data_subjects_estimate,
-        notification_text=notification_text,
-        actions_taken=["Automated breach assessment completed"],
-        contact_info="",
-        compliance_evidence={
-            "assessment_reasons": assessment.reasons,
-            "finding_severities": {f.id: f.severity for f in findings},
-        },
+        finding_dicts=finding_dicts,
+        org_name=org_name,
     )
-
-    session.add(breach)
-    await session.commit()
-    await session.refresh(breach)
+    if breach is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Findings do not constitute a notifiable breach",
+        )
 
     return {
         "breach_id": breach.id,
@@ -214,7 +188,7 @@ async def create_breach_notification(
         "hours_remaining": BreachNotificationService.check_sla_compliance(
             breach.detected_at
         ).hours_remaining,
-        "notification_preview": notification_text[:500] + "...",
+        "notification_preview": (breach.notification_text or "")[:500] + "...",
     }
 
 
@@ -375,6 +349,8 @@ async def get_breach_notification(
         "pii_types_affected": breach.pii_types_affected,
         "data_subjects_estimate": breach.data_subjects_estimate,
         "notification_text": breach.notification_text,
+        "notification_text_subject": breach.notification_text_subject,
+        "sla_alerts_sent": breach.sla_alerts_sent,
         "actions_taken": breach.actions_taken,
         "contact_info": breach.contact_info,
         "dismissed_reason": breach.dismissed_reason,
