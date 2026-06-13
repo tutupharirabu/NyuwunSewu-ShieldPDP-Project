@@ -97,8 +97,9 @@ export const api = {
     request<DashboardResponse>(
       `/dashboard${targetId ? `?target_id=${encodeURIComponent(targetId)}` : ""}`,
     ),
-  findings: (scanId?: string, targetId?: string, limit = 500) => {
+  findings: (scanId?: string, targetId?: string, limit = 500, offset = 0) => {
     const params = new URLSearchParams({ limit: String(limit) });
+    if (offset) params.set("offset", String(offset));
     if (scanId) params.set("scan_id", scanId);
     if (targetId) params.set("target_id", targetId);
     return request<FindingResponse[]>(`/findings?${params.toString()}`);

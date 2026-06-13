@@ -22,7 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
-import { useApi } from "@/hooks/use-api";
+import { useProgressiveFindings } from "@/hooks/use-progressive-findings";
 import { api } from "@/lib/api";
 import { compactId, formatNumber, severityColor } from "@/lib/utils";
 import type {
@@ -220,7 +220,7 @@ function readableRequestUrl(evidence: FindingEvidenceResponse | null) {
 }
 
 export function FindingsPage() {
-  const { data, loading, error } = useApi(api.findings, [], "findings");
+  const { data, loading, error } = useProgressiveFindings();
   const [query, setQuery] = useState("");
   const [severity, setSeverity] = useState("all");
   const [status, setStatus] = useState("all");

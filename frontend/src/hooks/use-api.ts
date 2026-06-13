@@ -17,6 +17,12 @@ export function primeApiCache(cacheKey: string, value: unknown) {
   apiCache.set(cacheKey, value);
 }
 
+// Read a cached value (if any) so callers outside useApi can render instantly
+// from the last response while they revalidate in the background.
+export function readApiCache<T>(cacheKey: string): T | undefined {
+  return apiCache.get(cacheKey) as T | undefined;
+}
+
 export function useApi<T>(
   loader: () => Promise<T>,
   deps: DependencyList = [],
