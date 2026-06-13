@@ -2,6 +2,8 @@ import type {
   AgentApprovalPayload,
   AgentSessionResponse,
   AuditLogResponse,
+  BreachDetail,
+  BreachListItem,
   ComplianceResponse,
   DashboardResponse,
   EndpointInventory,
@@ -124,6 +126,28 @@ export const api = {
       `/compliance/remediation-matrix${qs ? `?${qs}` : ""}`,
     );
   },
+  breaches: async () =>
+    (await request<{ breaches: BreachListItem[] }>("/compliance/breaches"))
+      .breaches,
+  breach: (id: string) =>
+    request<BreachDetail>(`/compliance/breach/${encodeURIComponent(id)}`),
+  breachNotify: (id: string, channels: string[] = ["telegram"], contactInfo = "") =>
+    request<{ status: string; sla_hours_remaining: number }>(
+      "/compliance/breach-notify",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          breach_id: id,
+          channels,
+          contact_info: contactInfo,
+        }),
+      },
+    ),
+  breachDismiss: (id: string, reason: string) =>
+    request<{ status: string }>(
+      `/compliance/breach-dismiss?breach_id=${encodeURIComponent(id)}`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
   reports: (targetId?: string) =>
     request<ReportResponse[]>(
       `/reports${targetId ? `?target_id=${encodeURIComponent(targetId)}` : ""}`,

@@ -284,3 +284,47 @@ export interface AgentApprovalPayload {
   approved: boolean;
   notes?: string;
 }
+
+export interface BreachListItem {
+  breach_id: string;
+  breach_title: string;
+  severity: string;
+  status: string;
+  detected_at: string;
+  sla_deadline: string;
+  notified_at: string | null;
+  sla_compliant: boolean;
+  hours_remaining: number;
+  is_overdue: boolean;
+  pii_types_count: number;
+}
+
+export interface BreachDetail {
+  breach_id: string;
+  finding_ids: string[];
+  breach_title: string;
+  description: string;
+  breach_type: string;
+  severity: string;
+  status: string;
+  detected_at: string;
+  sla_deadline: string;
+  notified_at: string | null;
+  notification_channels: string[];
+  pii_types_affected: string[];
+  data_subjects_estimate: number;
+  notification_text: string | null;
+  notification_text_subject: string | null;
+  sla_alerts_sent: string[];
+  actions_taken: string[];
+  contact_info: string | null;
+  dismissed_reason: string | null;
+  sla_status: {
+    is_compliant: boolean;
+    hours_remaining: number;
+    is_overdue: boolean;
+  };
+  compliance_evidence: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
