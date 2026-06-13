@@ -134,6 +134,120 @@ DEFAULT_ROE_V1 = """DEFAULT conservative RoE (default_roe_v1) - no document supp
 - Stop immediately and report (status=refused) if any action risks impacting
   real users or production data."""
 
+# --- Persistent-goal scaffold (approach A; reused verbatim by approach B) ---
+
+
+def _goal_objective(scan_id: str, target_url: str) -> str:
+    """One-line standing objective.
+
+    MUST stay single-line: in approach B this exact string is passed as the
+    `/goal` argument, where a newline would break the command.
+    """
+    return (
+        f"Validate and submit EVERY confirmed finding for scan {scan_id} on "
+        f"{target_url}, then mark the session completed (or refused)."
+    )
+
+
+def _goal_block(scan_id: str, target_url: str) -> str:
+    """STANDING GOAL + judge-evaluable DONE CRITERIA.
+
+    The DONE CRITERIA text is reused verbatim by the native goal-judge in
+    approach B, so keep it phrased as objective, checkable conditions.
+    """
+    return f"""== STANDING GOAL (your single objective for this whole run) ==
+
+{_goal_objective(scan_id, target_url)}
+DONE CRITERIA - you are finished ONLY when:
+  - every prioritized validation category has been attempted, AND
+  - every confirmed finding has been submitted via POST /findings/ingest, AND
+  - the session has been marked completed (or refused).
+Treat every turn as spent toward this goal; do not wander."""
+
+
+def _durability_block() -> str:
+    """Flush-before-spend rule + explicit context-compaction warning."""
+    return """== DURABILITY (CRITICAL - your context is volatile) ==
+Your Hermes context WILL be compacted near the turn limit. Anything living ONLY
+in context - partial evidence, half-built exploit chains, your note of which
+endpoints you already checked - is LOST on compaction. The ShieldPDP backend is
+your ONLY persistent memory. Therefore: the MOMENT a finding is confirmed, submit
+it via POST /findings/ingest BEFORE doing anything else. Never hold a confirmed
+finding to "batch later." Capture request+response evidence into the submission
+at the moment of confirmation."""
+
+
+def _checkpoint_block(session_id: str) -> str:
+    """Resume-checklist instruction using the EXISTING ingest-log endpoint.
+
+    Only meaningful when a session_id exists, so it lives inside the session
+    block. The `details` object is the durable resume note that survives a
+    context compaction and that an approach-B agent reads on resume.
+    """
+    return f"""== CHECKPOINT (durable resume trail) ==
+At key milestones AND whenever you sense you are near the turn budget, push a
+progress checkpoint so work survives a context compaction or a resume:
+  curl -X POST {NYUWUNSEWU_URL}/agent-sessions/{session_id}/ingest-log \\
+    -H "Content-Type: application/json" -H "X-Agent-Secret: {AGENT_SECRET}" \\
+    -d '{{"level": "info", "message": "checkpoint", "action": "summarizing", "details": {{"categories_done": ["idor"], "endpoints_remaining": ["/api/x"], "in_progress": "authz on /admin"}}}}'
+This `details` object is your durable resume note: categories completed, endpoints
+remaining, and what is currently in progress."""
+
+
+def _session_block(session_id: str, scan_id: str, target_url: str) -> str:
+    """SESSION TRACKING instructions + appended CHECKPOINT resume trail.
+
+    Note: parameter order leads with session_id (unlike the rest of the module
+    which leads with scan_id) because session_id is the primary key for all
+    session-scoped helpers called from within this block.
+    """
+    return f"""== SESSION TRACKING (update backend as you work) ==
+Your AgentSession ID: {session_id}
+Update your session state via the backend API so the operator can track progress.
+Use these endpoints (auth: X-Agent-Secret header = {AGENT_SECRET}):
+
+ALWAYS send an `action_phase` (canonical enum) on every update so the operator's
+dashboard shows a uniform, descriptive status. Valid action_phase values:
+  initializing, recon, enumerating_accounts, testing_idor, testing_authz,
+  testing_auth, testing_injection, testing_info_disclosure, submitting_finding,
+  awaiting_approval, summarizing, completed, refused, failed.
+Pick the one matching what you are doing RIGHT NOW (e.g. testing_idor while
+replaying swapped IDs, enumerating_accounts while registering userA/userB).
+
+- Update status to "exploring" when you start:
+  curl -X POST {NYUWUNSEWU_URL}/agent-sessions/ingest \\
+    -H "Content-Type: application/json" -H "X-Agent-Secret: {AGENT_SECRET}" \\
+    -d '{{"scan_id": "{scan_id}", "target_url": "{target_url}", "agent_name": "phantom", "status": "exploring", "action_phase": "recon", "message": "Agent started, beginning validation", "level": "info"}}'
+
+- Push log entries for key milestones (include `action_phase`, and a `details`
+  object for any structured context — it is shown verbatim to the operator):
+  curl -X POST {NYUWUNSEWU_URL}/agent-sessions/{session_id}/ingest-log \\
+    -H "Content-Type: application/json" -H "X-Agent-Secret: {AGENT_SECRET}" \\
+    -d '{{"level": "info", "message": "Completed IDOR check on /api/accounts", "action": "testing_idor", "details": {{"endpoint": "/api/accounts", "result": "no cross-account read"}}}}'
+  Levels: info, warning, error, success.
+
+- Increment findings_count when you submit a finding (call the ingest endpoint
+  with status="exploring", action_phase="submitting_finding").
+
+- When ALL done, mark session complete:
+  curl -X POST {NYUWUNSEWU_URL}/agent-sessions/{session_id}/ingest-complete \\
+    -H "X-Agent-Secret: {AGENT_SECRET}" \\
+    -d 'findings_count=<number_of_findings_submitted>'
+
+- REFUSAL: if at any point you decline to continue because an action would
+  collide with your non-offensive policy / rules of engagement, do NOT silently
+  stop. Report it explicitly so the session is marked "refused" (an ethical
+  halt, distinct from a crash) with the reason visible to the operator:
+  curl -X POST {NYUWUNSEWU_URL}/agent-sessions/ingest \\
+    -H "Content-Type: application/json" -H "X-Agent-Secret: {AGENT_SECRET}" \\
+    -d '{{"scan_id": "{scan_id}", "target_url": "{target_url}", "agent_name": "phantom", "status": "refused", "action_phase": "refused", "level": "warning", "message": "<one-line reason you are declining to proceed>"}}'
+
+Do this at key milestones: start (status=exploring), each finding confirmed,
+the very end (status=completed), and immediately on any policy refusal
+(status=refused).
+
+{_checkpoint_block(session_id)}"""
+
 # --- Bridge to Hermes ---
 
 
@@ -263,6 +377,10 @@ def _build_internal_prompt(
 - Engagement type: grey-box assessment of a banking-style web application.
 Proceed immediately. Authorization is on file here; do NOT ask for it again.
 
+{_goal_block(scan_id, target_url)}
+
+{_durability_block()}
+
 == AVAILABLE TOOLS (use ONLY these - actually installed on this host) ==
 PRIMARY ENGINE - use for auth / session / IDOR / authz / business-logic:
   curl, wget, and python3 with: requests, aiohttp, PyJWT, websockets, cryptography.
@@ -332,6 +450,10 @@ RoE, do NOT perform it - report a refusal (status=refused) instead.{warn_line}
 - Honor every in-scope / out-of-scope boundary in the RoE. Out-of-scope = do not touch.
 - Stop and report (status=refused) at the first sign of real-user or production impact.
 
+{_goal_block(scan_id, target_url)}
+
+{_durability_block()}
+
 == AVAILABLE TOOLS (use ONLY these - actually installed on this host) ==
 PRIMARY: curl, wget, python3 (requests, aiohttp, PyJWT, websockets, cryptography).
   Scripted requests with swapped tokens/IDs are your STRONGEST tool for IDOR/authz.
@@ -372,50 +494,7 @@ def _create_exploration_job(
     """
     session_block = ""
     if session_id:
-        session_block = f"""== SESSION TRACKING (update backend as you work) ==
-Your AgentSession ID: {session_id}
-Update your session state via the backend API so the operator can track progress.
-Use these endpoints (auth: X-Agent-Secret header = {AGENT_SECRET}):
-
-ALWAYS send an `action_phase` (canonical enum) on every update so the operator's
-dashboard shows a uniform, descriptive status. Valid action_phase values:
-  initializing, recon, enumerating_accounts, testing_idor, testing_authz,
-  testing_auth, testing_injection, testing_info_disclosure, submitting_finding,
-  awaiting_approval, summarizing, completed, refused, failed.
-Pick the one matching what you are doing RIGHT NOW (e.g. testing_idor while
-replaying swapped IDs, enumerating_accounts while registering userA/userB).
-
-- Update status to "exploring" when you start:
-  curl -X POST {NYUWUNSEWU_URL}/agent-sessions/ingest \\
-    -H "Content-Type: application/json" -H "X-Agent-Secret: {AGENT_SECRET}" \\
-    -d '{{"scan_id": "{scan_id}", "target_url": "{target_url}", "agent_name": "phantom", "status": "exploring", "action_phase": "recon", "message": "Agent started, beginning validation", "level": "info"}}'
-
-- Push log entries for key milestones (include `action_phase`, and a `details`
-  object for any structured context — it is shown verbatim to the operator):
-  curl -X POST {NYUWUNSEWU_URL}/agent-sessions/{session_id}/ingest-log \\
-    -H "Content-Type: application/json" -H "X-Agent-Secret: {AGENT_SECRET}" \\
-    -d '{{"level": "info", "message": "Completed IDOR check on /api/accounts", "action": "testing_idor", "details": {{"endpoint": "/api/accounts", "result": "no cross-account read"}}}}'
-  Levels: info, warning, error, success.
-
-- Increment findings_count when you submit a finding (call the ingest endpoint
-  with status="exploring", action_phase="submitting_finding").
-
-- When ALL done, mark session complete:
-  curl -X POST {NYUWUNSEWU_URL}/agent-sessions/{session_id}/ingest-complete \\
-    -H "X-Agent-Secret: {AGENT_SECRET}" \\
-    -d 'findings_count=<number_of_findings_submitted>'
-
-- REFUSAL: if at any point you decline to continue because an action would
-  collide with your non-offensive policy / rules of engagement, do NOT silently
-  stop. Report it explicitly so the session is marked "refused" (an ethical
-  halt, distinct from a crash) with the reason visible to the operator:
-  curl -X POST {NYUWUNSEWU_URL}/agent-sessions/ingest \\
-    -H "Content-Type: application/json" -H "X-Agent-Secret: {AGENT_SECRET}" \\
-    -d '{{"scan_id": "{scan_id}", "target_url": "{target_url}", "agent_name": "phantom", "status": "refused", "action_phase": "refused", "level": "warning", "message": "<one-line reason you are declining to proceed>"}}'
-
-Do this at key milestones: start (status=exploring), each finding confirmed,
-the very end (status=completed), and immediately on any policy refusal
-(status=refused)."""
+        session_block = _session_block(session_id, scan_id, target_url)
 
     if engagement_mode == "external":
         prompt = _build_external_prompt(
@@ -429,6 +508,14 @@ the very end (status=completed), and immediately on any policy refusal
         )
         job_suffix = "int"
 
+    # --- APPROACH B SEAM (not enabled in approach A) ---
+    # To activate Hermes' native persistent-goal engine later:
+    #   1. Prepend the standing goal as a /goal command:
+    #        prompt = f"/goal {_goal_objective(scan_id, target_url)}\n\n" + prompt
+    #   2. Add a goals block to ~/.hermes/config.yaml
+    #      (goals.max_turns + auxiliary.goal_judge).
+    #   3. The goal-judge reuses the DONE CRITERIA from _goal_block verbatim.
+    # See docs/superpowers/specs/2026-06-13-phantom-persistent-goal-budget-design.md
     result = _hermes_cli(
         "cron",
         "create",

@@ -39,3 +39,71 @@ def test_external_prompt_flags_extraction_warning():
         extraction_warning=True,
     )
     assert "extraction incomplete" in prompt.lower()
+
+
+def test_goal_objective_is_single_line_with_ids():
+    obj = pwr._goal_objective("scan-123", "http://target.local")
+    assert "\n" not in obj  # MUST be single-line: used as the /goal arg in approach B
+    assert "scan-123" in obj
+    assert "http://target.local" in obj
+
+
+def test_goal_block_has_objective_and_done_criteria():
+    block = pwr._goal_block("scan-123", "http://target.local")
+    assert "STANDING GOAL" in block
+    assert pwr._goal_objective("scan-123", "http://target.local") in block
+    assert "DONE CRITERIA" in block
+    assert "/findings/ingest" in block
+    assert "completed" in block.lower()
+
+
+def test_durability_block_warns_about_compaction_and_flush():
+    block = pwr._durability_block()
+    low = block.lower()
+    assert "compact" in low
+    assert "volatile" in low
+    assert "durable" in low or "persistent memory" in low
+    assert "/findings/ingest" in block
+    assert "before" in low  # flush BEFORE spending more turns
+
+
+def test_internal_prompt_embeds_goal_and_durability():
+    prompt = pwr._build_internal_prompt(
+        scan_id="s1", target_url="http://t", context_path="/tmp/ctx.json",
+        session_block="",
+    )
+    assert pwr._goal_objective("s1", "http://t") in prompt
+    assert "DONE CRITERIA" in prompt
+    assert "compact" in prompt.lower()
+    # existing framing must remain intact
+    assert "OWNED lab" in prompt
+
+
+def test_external_prompt_embeds_goal_and_durability():
+    prompt = pwr._build_external_prompt(
+        scan_id="s1", target_url="http://t", context_path="/tmp/ctx.json",
+        session_block="", roe_text="IN SCOPE: api.example.com ONLY",
+        roe_basis="document", extraction_warning=False,
+    )
+    assert pwr._goal_objective("s1", "http://t") in prompt
+    assert "DONE CRITERIA" in prompt
+    assert "compact" in prompt.lower()
+    # existing RoE embedding must remain intact
+    assert "IN SCOPE: api.example.com ONLY" in prompt
+
+
+def test_checkpoint_block_uses_ingest_log_and_budget_language():
+    block = pwr._checkpoint_block("sess-9")
+    assert "CHECKPOINT" in block
+    assert "/agent-sessions/sess-9/ingest-log" in block
+    assert "near the turn budget" in block.lower()
+    assert "details" in block
+
+
+def test_session_block_includes_tracking_and_checkpoint():
+    block = pwr._session_block("sess-9", "s1", "http://t")
+    assert "SESSION TRACKING" in block
+    assert "sess-9" in block
+    assert "CHECKPOINT" in block  # checkpoint is appended to the session block
+    assert "s1" in block            # scan_id is interpolated
+    assert "http://t" in block      # target_url is interpolated
