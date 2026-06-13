@@ -10,9 +10,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.core.config import get_settings
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +237,7 @@ class BreachNotificationService:
             "NOTIFIKASI KEGAGALAN PELINDUNGAN DATA PRIBADI",
             "=" * 50,
             "",
-            "Kepada Yth. Badan Pelindungan Data Pribadi",
+            f"Kepada Yth. {get_settings().pdp_authority_name}",
             "dengan hormat,",
             "",
             f"Bersama ini {organization_name or 'Kami'} menyampaikan notifikasi "
@@ -311,6 +314,125 @@ class BreachNotificationService:
         )
 
         return "\n".join(sections)
+
+    @classmethod
+    def generate_subject_notification_text(
+        cls,
+        breach_assessment: BreachAssessment,
+        organization_name: str = "",
+        contact_info: str = "",
+    ) -> str:
+        """Surat notifikasi untuk Subjek Data (pengguna), bahasa awam + imbauan.
+
+        Pasal 46 ayat (1): subjek data wajib diberi tahu agar dapat melindungi diri.
+        """
+        now = datetime.now(timezone.utc).strftime("%d %B %Y %H:%M WIB")
+        org = organization_name or "Kami"
+
+        lines = [
+            "PEMBERITAHUAN INSIDEN KEAMANAN DATA PRIBADI",
+            "=" * 50,
+            "",
+            "Yth. Pengguna/Pelanggan,",
+            "",
+            f"{org} memberitahukan bahwa telah terjadi insiden yang berpotensi "
+            "memengaruhi keamanan data pribadi Anda. Kami menyampaikan ini sesuai "
+            "Pasal 46 UU No. 27 Tahun 2022 tentang Pelindungan Data Pribadi.",
+            "",
+            "DATA YANG BERPOTENSI TERDAMPAK:",
+        ]
+        if breach_assessment.pii_types:
+            for pii_type in breach_assessment.pii_types:
+                lines.append(f"  - {cls._get_pii_label(pii_type)}")
+        else:
+            lines.append("  - Sedang dalam penelaahan")
+
+        lines.extend(
+            [
+                "",
+                "LANGKAH YANG SEBAIKNYA ANDA LAKUKAN SEGERA:",
+                "  1. Ganti kata sandi akun Anda, dan akun lain yang memakai "
+                "kata sandi sama.",
+                "  2. Aktifkan autentikasi dua faktor (2FA) bila tersedia.",
+                "  3. Jika data kartu/rekening terdampak, hubungi bank Anda untuk "
+                "pemblokiran/penggantian kartu dan pantau mutasi.",
+                "  4. Waspadai upaya penipuan (phishing) via telepon, email, atau "
+                "pesan yang mengatasnamakan kami.",
+                "",
+                "TINDAKAN YANG SEDANG KAMI LAKUKAN:",
+                "  - Investigasi dan penanganan insiden sedang berlangsung.",
+                "  - Langkah mitigasi dan peningkatan keamanan diterapkan.",
+                "",
+            ]
+        )
+        if contact_info:
+            lines.extend(["CARA MENGHUBUNGI KAMI:", contact_info, ""])
+        else:
+            lines.extend(
+                [
+                    "CARA MENGHUBUNGI KAMI:",
+                    f"Silakan hubungi {org} melalui saluran resmi yang tersedia.",
+                    "",
+                ]
+            )
+        lines.extend(
+            [
+                "=" * 50,
+                f"Pemberitahuan ini dibuat pada {now}. Mohon maaf atas "
+                "ketidaknyamanan ini dan terima kasih atas perhatian Anda.",
+            ]
+        )
+        return "\n".join(lines)
+
+    @classmethod
+    async def persist_breach(
+        cls,
+        session: "AsyncSession",
+        organization_id: str,
+        finding_dicts: list[dict[str, Any]],
+        org_name: str = "",
+        contact_info: str = "",
+    ):
+        """Assess findings; jika wajib lapor, buat record BreachNotification
+        (mulai jam SLA 72 jam), generate kedua varian surat, commit, kembalikan
+        record. Kembalikan None bila bukan breach wajib-lapor."""
+        from app.models.agent import BreachNotification  # hindari circular import
+
+        assessment = cls.detect_breach(finding_dicts)
+        if not assessment.is_breach or not assessment.requires_notification:
+            return None
+
+        authority_text = cls.generate_notification_text(
+            assessment, organization_name=org_name, contact_info=contact_info
+        )
+        subject_text = cls.generate_subject_notification_text(
+            assessment, organization_name=org_name, contact_info=contact_info
+        )
+
+        now = datetime.now(timezone.utc)
+        breach = BreachNotification(
+            organization_id=organization_id,
+            finding_ids=assessment.finding_ids,
+            breach_title=assessment.breach_type or "Data breach assessment",
+            description=assessment.description,
+            breach_type=assessment.breach_type,
+            severity=assessment.severity,
+            status="assessing",
+            detected_at=now,
+            sla_deadline=now + timedelta(hours=cls.NOTIFICATION_DEADLINE_HOURS),
+            pii_types_affected=assessment.pii_types,
+            data_subjects_estimate=assessment.data_subjects_estimate,
+            notification_text=authority_text,
+            notification_text_subject=subject_text,
+            actions_taken=["Automated breach assessment completed"],
+            contact_info=contact_info,
+            sla_alerts_sent=[],
+            compliance_evidence={"assessment_reasons": assessment.reasons},
+        )
+        session.add(breach)
+        await session.commit()
+        await session.refresh(breach)
+        return breach
 
     @classmethod
     def check_sla_compliance(

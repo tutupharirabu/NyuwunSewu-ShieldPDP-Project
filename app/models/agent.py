@@ -146,3 +146,14 @@ class BreachNotification(Base, TimestampMixin):
         nullable=False,
         comment="Evidence of compliance: timestamps, delivery confirmations, etc.",
     )
+    sla_alerts_sent: Mapped[list[str]] = mapped_column(
+        JSON,
+        default=list,
+        nullable=False,
+        comment="SLA alert thresholds already sent, e.g. ['48','24','overdue']",
+    )
+    notification_text_subject: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Generated data-subject (pengguna) notification text per Pasal 46",
+    )

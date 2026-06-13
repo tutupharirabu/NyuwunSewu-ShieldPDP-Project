@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -12,6 +13,7 @@ from app.database.session import get_engine, get_sessionmaker
 from app import models  # noqa: F401
 from app.middleware.http_cache import HTTPCacheMiddleware
 from app.middleware.request_context import RequestContextMiddleware
+from app.services.sla_monitor import run_sla_monitor
 
 
 @asynccontextmanager
@@ -25,7 +27,20 @@ async def lifespan(app: FastAPI):
     if not get_settings().use_celery:
         async with session_factory() as session:
             await mark_interrupted_scans(session)
-    yield
+
+    sla_task = None
+    stop_event = asyncio.Event()
+    if get_settings().enable_sla_monitor:
+        sla_task = asyncio.create_task(run_sla_monitor(stop_event))
+    try:
+        yield
+    finally:
+        if sla_task is not None:
+            stop_event.set()
+            try:
+                await asyncio.wait_for(sla_task, timeout=10)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                sla_task.cancel()
 
 
 settings = get_settings()
