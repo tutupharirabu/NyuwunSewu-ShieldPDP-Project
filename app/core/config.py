@@ -48,6 +48,12 @@ class Settings(BaseSettings):
         None, description="Telegram chat ID for agent notifications"
     )
 
+    # Breach SLA automation (Pasal 46 UU PDP)
+    enable_sla_monitor: bool = True
+    sla_monitor_interval_seconds: int = 900  # 15 menit
+    sla_alert_thresholds: list[int] = [48, 24, 6, 1]  # jam tersisa
+    pdp_authority_name: str = "Kementerian Komunikasi dan Digital (Komdigi)"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
