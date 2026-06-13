@@ -141,9 +141,9 @@ export const api = {
     request<RemediationSummary[]>(
       `/remediations${targetId ? `?target_id=${encodeURIComponent(targetId)}` : ""}`,
     ),
-  auditLogs: (targetId?: string) =>
+  auditLogs: (targetId?: string, limit = 100) =>
     request<AuditLogResponse[]>(
-      `/audit-logs?limit=100${targetId ? `&target_id=${encodeURIComponent(targetId)}` : ""}`,
+      `/audit-logs?limit=${limit}${targetId ? `&target_id=${encodeURIComponent(targetId)}` : ""}`,
     ),
   startScan: (payload: ScanStartPayload) =>
     request<{ scan_id: string; status: string; message: string }>(

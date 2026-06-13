@@ -1,7 +1,6 @@
 FROM python:3.11-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
@@ -10,6 +9,10 @@ RUN pip install --no-cache-dir --only-binary=lxml -r requirements.txt
 
 COPY . .
 RUN chmod +x docker/entrypoint.sh
+# Pre-compile to bytecode at build time so each container boot reuses cached
+# .pyc instead of recompiling all source in memory (see PYTHONDONTWRITEBYTECODE
+# removal above). Baked into the read-only image layer.
+RUN python -m compileall -q app
 
 EXPOSE 8000
 ENTRYPOINT ["docker/entrypoint.sh"]
@@ -21,4 +24,11 @@ ENTRYPOINT ["docker/entrypoint.sh"]
 # gives graceful restarts. `exec` keeps gunicorn as PID 1 so it receives stop
 # signals. Workers run the uvicorn ASGI worker class from the uvicorn-worker
 # package (uvicorn.workers is deprecated in modern uvicorn).
-CMD ["sh", "-c", "exec gunicorn app.main:app -k uvicorn_worker.UvicornWorker --workers ${WEB_CONCURRENCY:-4} --bind 0.0.0.0:8000 --timeout 120 --graceful-timeout 30 --access-logfile -"]
+#
+# `--preload` imports the app ONCE in the master before forking; workers then
+# fork copy-on-write instead of each re-importing the full dependency tree.
+# This eliminates the ~90s boot gap on small VPSes where N workers importing in
+# parallel thrash CPU/RAM (swap). Safe here because the DB engine/pool is built
+# lazily inside the lifespan (per-worker, post-fork) — no connection crosses the
+# fork. `--max-requests` recycles workers to bound any slow memory growth.
+CMD ["sh", "-c", "exec gunicorn app.main:app -k uvicorn_worker.UvicornWorker --workers ${WEB_CONCURRENCY:-4} --preload --bind 0.0.0.0:8000 --timeout 120 --graceful-timeout 30 --max-requests 1000 --max-requests-jitter 100 --access-logfile -"]

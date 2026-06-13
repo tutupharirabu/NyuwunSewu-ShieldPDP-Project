@@ -10,6 +10,13 @@ export function clearApiCache(cacheKey?: string) {
   else apiCache.clear();
 }
 
+// Pre-seed the cache so a later useApi(loader, deps, key) renders instantly from
+// it (stale-while-revalidate). Used to warm other pages' data in the background
+// after the dashboard's critical content has painted.
+export function primeApiCache(cacheKey: string, value: unknown) {
+  apiCache.set(cacheKey, value);
+}
+
 export function useApi<T>(
   loader: () => Promise<T>,
   deps: DependencyList = [],
