@@ -134,6 +134,35 @@ DEFAULT_ROE_V1 = """DEFAULT conservative RoE (default_roe_v1) - no document supp
 - Stop immediately and report (status=refused) if any action risks impacting
   real users or production data."""
 
+# --- Persistent-goal scaffold (approach A; reused verbatim by approach B) ---
+
+
+def _goal_objective(scan_id: str, target_url: str) -> str:
+    """One-line standing objective.
+
+    MUST stay single-line: in approach B this exact string is passed as the
+    `/goal` argument, where a newline would break the command.
+    """
+    return (
+        f"Validate and submit EVERY confirmed finding for scan {scan_id} on "
+        f"{target_url}, then mark the session completed (or refused)."
+    )
+
+
+def _goal_block(scan_id: str, target_url: str) -> str:
+    """STANDING GOAL + judge-evaluable DONE CRITERIA.
+
+    The DONE CRITERIA text is reused verbatim by the native goal-judge in
+    approach B, so keep it phrased as objective, checkable conditions.
+    """
+    return f"""== STANDING GOAL (your single objective for this whole run) ==
+{_goal_objective(scan_id, target_url)}
+DONE CRITERIA - you are finished ONLY when:
+  - every prioritized validation category has been attempted, AND
+  - every confirmed finding has been submitted via POST /findings/ingest, AND
+  - the session has been marked completed (or refused).
+Treat every turn as spent toward this goal; do not wander."""
+
 # --- Bridge to Hermes ---
 
 

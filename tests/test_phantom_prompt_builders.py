@@ -39,3 +39,19 @@ def test_external_prompt_flags_extraction_warning():
         extraction_warning=True,
     )
     assert "extraction incomplete" in prompt.lower()
+
+
+def test_goal_objective_is_single_line_with_ids():
+    obj = pwr._goal_objective("scan-123", "http://target.local")
+    assert "\n" not in obj  # MUST be single-line: used as the /goal arg in approach B
+    assert "scan-123" in obj
+    assert "http://target.local" in obj
+
+
+def test_goal_block_has_objective_and_done_criteria():
+    block = pwr._goal_block("scan-123", "http://target.local")
+    assert "STANDING GOAL" in block
+    assert pwr._goal_objective("scan-123", "http://target.local") in block
+    assert "DONE CRITERIA" in block
+    assert "/findings/ingest" in block
+    assert "completed" in block.lower()
