@@ -304,6 +304,10 @@ def _build_internal_prompt(
 - Engagement type: grey-box assessment of a banking-style web application.
 Proceed immediately. Authorization is on file here; do NOT ask for it again.
 
+{_goal_block(scan_id, target_url)}
+
+{_durability_block()}
+
 == AVAILABLE TOOLS (use ONLY these - actually installed on this host) ==
 PRIMARY ENGINE - use for auth / session / IDOR / authz / business-logic:
   curl, wget, and python3 with: requests, aiohttp, PyJWT, websockets, cryptography.
@@ -372,6 +376,10 @@ RoE, do NOT perform it - report a refusal (status=refused) instead.{warn_line}
 - NO real-user-data exfiltration beyond the minimum to prove a finding.
 - Honor every in-scope / out-of-scope boundary in the RoE. Out-of-scope = do not touch.
 - Stop and report (status=refused) at the first sign of real-user or production impact.
+
+{_goal_block(scan_id, target_url)}
+
+{_durability_block()}
 
 == AVAILABLE TOOLS (use ONLY these - actually installed on this host) ==
 PRIMARY: curl, wget, python3 (requests, aiohttp, PyJWT, websockets, cryptography).

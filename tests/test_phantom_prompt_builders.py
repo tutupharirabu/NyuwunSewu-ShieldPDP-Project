@@ -65,3 +65,28 @@ def test_durability_block_warns_about_compaction_and_flush():
     assert "durable" in low or "persistent memory" in low
     assert "/findings/ingest" in block
     assert "before" in low  # flush BEFORE spending more turns
+
+
+def test_internal_prompt_embeds_goal_and_durability():
+    prompt = pwr._build_internal_prompt(
+        scan_id="s1", target_url="http://t", context_path="/tmp/ctx.json",
+        session_block="",
+    )
+    assert pwr._goal_objective("s1", "http://t") in prompt
+    assert "DONE CRITERIA" in prompt
+    assert "compact" in prompt.lower()
+    # existing framing must remain intact
+    assert "OWNED lab" in prompt
+
+
+def test_external_prompt_embeds_goal_and_durability():
+    prompt = pwr._build_external_prompt(
+        scan_id="s1", target_url="http://t", context_path="/tmp/ctx.json",
+        session_block="", roe_text="IN SCOPE: api.example.com ONLY",
+        roe_basis="document", extraction_warning=False,
+    )
+    assert pwr._goal_objective("s1", "http://t") in prompt
+    assert "DONE CRITERIA" in prompt
+    assert "compact" in prompt.lower()
+    # existing RoE embedding must remain intact
+    assert "IN SCOPE: api.example.com ONLY" in prompt
