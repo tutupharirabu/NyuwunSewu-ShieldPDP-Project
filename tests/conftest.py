@@ -14,6 +14,7 @@ os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "ChangeMe123!")
 
 @pytest.fixture(scope="session", autouse=True)
 def initialize_database():
+    import app.models  # noqa: F401  -- register all tables on Base.metadata
     from app.database.base import Base
     from app.database.session import engine
 
