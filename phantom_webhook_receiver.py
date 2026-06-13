@@ -502,6 +502,14 @@ def _create_exploration_job(
         )
         job_suffix = "int"
 
+    # --- APPROACH B SEAM (not enabled in approach A) ---
+    # To activate Hermes' native persistent-goal engine later:
+    #   1. Prepend the standing goal as a /goal command:
+    #        prompt = f"/goal {_goal_objective(scan_id, target_url)}\n\n" + prompt
+    #   2. Add a goals block to ~/.hermes/config.yaml
+    #      (goals.max_turns + auxiliary.goal_judge).
+    #   3. The goal-judge reuses the DONE CRITERIA from _goal_block verbatim.
+    # See docs/superpowers/specs/2026-06-13-phantom-persistent-goal-budget-design.md
     result = _hermes_cli(
         "cron",
         "create",
