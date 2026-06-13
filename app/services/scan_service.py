@@ -68,6 +68,54 @@ async def run_scan_by_id(
         await runner.run(scan_id, runtime_options)
 
 
+async def assess_breach_after_scan(
+    session: AsyncSession,
+    organization_id: str,
+    finding_dicts: list[dict[str, Any]],
+    org_name: str = "",
+):
+    """Assess findings → create BreachNotification + send internal Telegram alert.
+
+    Returns the breach record (or None). Never raises to the caller — breach
+    assessment must not fail a completed scan.
+    """
+    from app.services.breach_notification import (
+        BreachAssessment,
+        BreachNotificationService,
+    )
+
+    breach = await BreachNotificationService.persist_breach(
+        session,
+        organization_id=organization_id,
+        finding_dicts=finding_dicts,
+        org_name=org_name,
+    )
+    if breach is None:
+        return None
+
+    try:
+        msg = BreachNotificationService.build_telegram_message(
+            BreachAssessment(
+                is_breach=True,
+                severity=breach.severity,
+                finding_ids=breach.finding_ids,
+                pii_types=breach.pii_types_affected,
+                breach_type=breach.breach_type,
+                data_subjects_estimate=breach.data_subjects_estimate,
+            ),
+            organization_name=org_name,
+        )
+        result = await BreachNotificationService.send_telegram_notification(msg)
+        if result.get("success"):
+            breach.notification_channels = list(
+                {*breach.notification_channels, "telegram"}
+            )
+            await session.commit()
+    except Exception:
+        logger.exception("Telegram breach alert failed (non-fatal)")
+    return breach
+
+
 class ScanRunner(_ScoringMixin, _ReportingMixin):
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -286,6 +334,35 @@ class ScanRunner(_ScoringMixin, _ReportingMixin):
             scan.stats = await self._scan_stats(scan, phase="Completed", progress=100)
             await self.session.commit()
             await self._dispatch_webhooks(scan, "scan.completed")
+
+            # Auto-assess breach notification (Pasal 46) — non-fatal.
+            try:
+                from app.models import Organization
+
+                fstmt = select(Finding).where(Finding.scan_id == scan.id)
+                scan_findings = (
+                    await self.session.execute(fstmt)
+                ).scalars().all()
+                finding_dicts = [
+                    {
+                        "id": f.id,
+                        "finding_type": f.finding_type,
+                        "severity": f.severity,
+                        "title": f.title,
+                        "evidence_summary": f.evidence_summary,
+                        "compliance": f.compliance,
+                    }
+                    for f in scan_findings
+                ]
+                org = await self.session.get(Organization, scan.organization_id)
+                await assess_breach_after_scan(
+                    self.session,
+                    organization_id=scan.organization_id,
+                    finding_dicts=finding_dicts,
+                    org_name=org.name if org else "",
+                )
+            except Exception:
+                logger.exception("Auto breach assessment failed (non-fatal)")
         except Exception as exc:
             scan.status = ScanStatus.FAILED.value
             scan.error = f"{type(exc).__name__}: {exc}"
