@@ -156,6 +156,7 @@ def _goal_block(scan_id: str, target_url: str) -> str:
     approach B, so keep it phrased as objective, checkable conditions.
     """
     return f"""== STANDING GOAL (your single objective for this whole run) ==
+
 {_goal_objective(scan_id, target_url)}
 DONE CRITERIA - you are finished ONLY when:
   - every prioritized validation category has been attempted, AND
@@ -176,7 +177,7 @@ finding to "batch later." Capture request+response evidence into the submission
 at the moment of confirmation."""
 
 
-def _checkpoint_block(session_id: str, scan_id: str, target_url: str) -> str:
+def _checkpoint_block(session_id: str) -> str:
     """Resume-checklist instruction using the EXISTING ingest-log endpoint.
 
     Only meaningful when a session_id exists, so it lives inside the session
@@ -194,7 +195,12 @@ remaining, and what is currently in progress."""
 
 
 def _session_block(session_id: str, scan_id: str, target_url: str) -> str:
-    """SESSION TRACKING instructions + appended CHECKPOINT resume trail."""
+    """SESSION TRACKING instructions + appended CHECKPOINT resume trail.
+
+    Note: parameter order leads with session_id (unlike the rest of the module
+    which leads with scan_id) because session_id is the primary key for all
+    session-scoped helpers called from within this block.
+    """
     return f"""== SESSION TRACKING (update backend as you work) ==
 Your AgentSession ID: {session_id}
 Update your session state via the backend API so the operator can track progress.
@@ -240,7 +246,7 @@ Do this at key milestones: start (status=exploring), each finding confirmed,
 the very end (status=completed), and immediately on any policy refusal
 (status=refused).
 
-{_checkpoint_block(session_id, scan_id, target_url)}"""
+{_checkpoint_block(session_id)}"""
 
 # --- Bridge to Hermes ---
 

@@ -93,7 +93,7 @@ def test_external_prompt_embeds_goal_and_durability():
 
 
 def test_checkpoint_block_uses_ingest_log_and_budget_language():
-    block = pwr._checkpoint_block("sess-9", "s1", "http://t")
+    block = pwr._checkpoint_block("sess-9")
     assert "CHECKPOINT" in block
     assert "/agent-sessions/sess-9/ingest-log" in block
     assert "near the turn budget" in block.lower()
@@ -105,3 +105,5 @@ def test_session_block_includes_tracking_and_checkpoint():
     assert "SESSION TRACKING" in block
     assert "sess-9" in block
     assert "CHECKPOINT" in block  # checkpoint is appended to the session block
+    assert "s1" in block            # scan_id is interpolated
+    assert "http://t" in block      # target_url is interpolated
