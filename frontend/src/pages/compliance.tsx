@@ -51,6 +51,8 @@ import { api } from "@/lib/api";
 import { cn, compactId, formatNumber, severityColor } from "@/lib/utils";
 import type {
   AuditLogResponse,
+  BreachDetail,
+  BreachListItem,
   ComplianceRow,
   DashboardResponse,
   FindingEvidenceResponse,
@@ -1867,6 +1869,239 @@ function ComplianceScopeHeader({
 // Memoized so opening the drawer/modal or switching selection state in
 // CompliancePage does not re-render these expensive panels when their data
 // props are unchanged.
+function BreachNotificationsPanel() {
+  const [items, setItems] = useState<BreachListItem[]>([]);
+  const [selected, setSelected] = useState<BreachDetail | null>(null);
+  const [variant, setVariant] = useState<"authority" | "subject">("authority");
+  const [dismissing, setDismissing] = useState(false);
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      setItems(await api.breaches());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Gagal memuat breach");
+    }
+  };
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const open = async (id: string) => {
+    setVariant("authority");
+    setDismissing(false);
+    setReason("");
+    try {
+      setSelected(await api.breach(id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Gagal memuat detail");
+    }
+  };
+
+  const letter =
+    variant === "authority"
+      ? selected?.notification_text
+      : selected?.notification_text_subject;
+
+  const copy = () => {
+    if (letter) void navigator.clipboard.writeText(letter);
+  };
+  const download = () => {
+    if (!letter || !selected) return;
+    const blob = new Blob([letter], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `surat-${variant}-${selected.breach_id}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const notify = async () => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await api.breachNotify(selected.breach_id);
+      await open(selected.breach_id);
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+  const dismiss = async () => {
+    if (!selected || !reason.trim()) return;
+    setBusy(true);
+    try {
+      await api.breachDismiss(selected.breach_id, reason.trim());
+      setSelected(null);
+      setReason("");
+      setDismissing(false);
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const slaColor = (h: number, status: string) =>
+    status === "overdue" || h <= 0
+      ? "text-red-500"
+      : h < 6
+        ? "text-orange-500"
+        : h < 24
+          ? "text-amber-500"
+          : "text-emerald-500";
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Siren className="h-4 w-4 text-red-500" />
+          Breach Notifications (Pasal 46)
+        </CardTitle>
+        <CardDescription>
+          Auto-terdeteksi dari scan; SLA 3×24 jam. Surat draft untuk otoritas
+          (Komdigi) &amp; subjek data.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {error && <p className="text-xs text-red-500">{error}</p>}
+        {items.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            Belum ada breach terdeteksi.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {items.map((b) => (
+              <li key={b.breach_id}>
+                <button
+                  onClick={() => void open(b.breach_id)}
+                  className={cn(
+                    "flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-sm transition hover:bg-muted/40",
+                    selected?.breach_id === b.breach_id
+                      ? "border-primary"
+                      : "border-border/50",
+                  )}
+                >
+                  <span className="min-w-0 truncate">
+                    <span className="font-medium">{b.breach_title}</span>
+                    <span className="ml-2 text-xs uppercase opacity-70">
+                      {b.severity}
+                    </span>
+                  </span>
+                  <span
+                    className={cn(
+                      "ml-2 shrink-0 font-mono text-xs",
+                      slaColor(b.hours_remaining, b.status),
+                    )}
+                  >
+                    {b.status === "overdue" || b.hours_remaining <= 0
+                      ? "OVERDUE"
+                      : `${b.hours_remaining.toFixed(0)}j tersisa`}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {selected && (
+          <div className="rounded-lg border border-border/60 p-3">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => setVariant("authority")}
+                className={cn(
+                  "rounded px-2 py-1 text-xs",
+                  variant === "authority"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted",
+                )}
+              >
+                Ke Otoritas
+              </button>
+              <button
+                onClick={() => setVariant("subject")}
+                className={cn(
+                  "rounded px-2 py-1 text-xs",
+                  variant === "subject"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted",
+                )}
+              >
+                Ke Subjek Data
+              </button>
+              <div className="ml-auto flex gap-2">
+                <button
+                  onClick={copy}
+                  className="rounded bg-muted px-2 py-1 text-xs"
+                >
+                  Copy
+                </button>
+                <button
+                  onClick={download}
+                  className="rounded bg-muted px-2 py-1 text-xs"
+                >
+                  Download
+                </button>
+              </div>
+            </div>
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded bg-muted/40 p-3 text-xs">
+              {letter || "Surat belum tersedia."}
+            </pre>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => void notify()}
+                disabled={busy || selected.status === "notified"}
+                className="rounded bg-emerald-600 px-3 py-1 text-xs text-white disabled:opacity-50"
+              >
+                {selected.status === "notified"
+                  ? "Sudah dinotifikasi"
+                  : "Tandai sudah dinotifikasi"}
+              </button>
+              {!dismissing ? (
+                <button
+                  onClick={() => setDismissing(true)}
+                  disabled={
+                    busy ||
+                    selected.status === "notified" ||
+                    selected.status === "dismissed"
+                  }
+                  className="rounded bg-muted px-3 py-1 text-xs disabled:opacity-50"
+                >
+                  Dismiss
+                </button>
+              ) : (
+                <span className="flex flex-wrap items-center gap-2">
+                  <input
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                    placeholder="Alasan dismiss"
+                    className="rounded border border-border/60 bg-background px-2 py-1 text-xs"
+                  />
+                  <button
+                    onClick={() => void dismiss()}
+                    disabled={busy || !reason.trim()}
+                    className="rounded bg-red-600 px-2 py-1 text-xs text-white disabled:opacity-50"
+                  >
+                    Konfirmasi
+                  </button>
+                  <button
+                    onClick={() => setDismissing(false)}
+                    className="rounded bg-muted px-2 py-1 text-xs"
+                  >
+                    Batal
+                  </button>
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 const ComplianceGauge = memo(ComplianceGaugeImpl);
 const ComplianceHeatmap = memo(ComplianceHeatmapImpl);
 const SensitiveDataPanel = memo(SensitiveDataPanelImpl);
@@ -2124,6 +2359,7 @@ export function CompliancePage() {
             reports={data.reports}
             remediations={data.remediations}
           />
+          <BreachNotificationsPanel />
         </div>
       </div>
 
