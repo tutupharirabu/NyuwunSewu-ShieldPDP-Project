@@ -163,6 +163,18 @@ DONE CRITERIA - you are finished ONLY when:
   - the session has been marked completed (or refused).
 Treat every turn as spent toward this goal; do not wander."""
 
+
+def _durability_block() -> str:
+    """Flush-before-spend rule + explicit context-compaction warning."""
+    return """== DURABILITY (CRITICAL - your context is volatile) ==
+Your Hermes context WILL be compacted near the turn limit. Anything living ONLY
+in context - partial evidence, half-built exploit chains, your note of which
+endpoints you already checked - is LOST on compaction. The ShieldPDP backend is
+your ONLY persistent memory. Therefore: the MOMENT a finding is confirmed, submit
+it via POST /findings/ingest BEFORE doing anything else. Never hold a confirmed
+finding to "batch later." Capture request+response evidence into the submission
+at the moment of confirmation."""
+
 # --- Bridge to Hermes ---
 
 

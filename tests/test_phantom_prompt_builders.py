@@ -55,3 +55,13 @@ def test_goal_block_has_objective_and_done_criteria():
     assert "DONE CRITERIA" in block
     assert "/findings/ingest" in block
     assert "completed" in block.lower()
+
+
+def test_durability_block_warns_about_compaction_and_flush():
+    block = pwr._durability_block()
+    low = block.lower()
+    assert "compact" in low
+    assert "volatile" in low
+    assert "durable" in low or "persistent memory" in low
+    assert "/findings/ingest" in block
+    assert "before" in low  # flush BEFORE spending more turns
