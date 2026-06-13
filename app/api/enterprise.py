@@ -113,7 +113,12 @@ async def list_scans(
             target_id=scan.target_id,
             target_url=target_url,
             status=scan.status,
-            stats=scan.stats,
+            # The list is polled frequently; `stats.diagnostics` can balloon to
+            # multiple MB on a failed scan (one otto.de scan was 2.9 MB), which
+            # dominated this response and made it take ~50s over the wire. The
+            # Recent Scans table only needs the summary counters, so drop the
+            # heavy diagnostics blob here — it stays available on /scans/{id}.
+            stats={k: v for k, v in (scan.stats or {}).items() if k != "diagnostics"},
             started_at=scan.started_at,
             finished_at=scan.finished_at,
             created_at=scan.created_at,
