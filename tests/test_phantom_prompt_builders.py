@@ -90,3 +90,18 @@ def test_external_prompt_embeds_goal_and_durability():
     assert "compact" in prompt.lower()
     # existing RoE embedding must remain intact
     assert "IN SCOPE: api.example.com ONLY" in prompt
+
+
+def test_checkpoint_block_uses_ingest_log_and_budget_language():
+    block = pwr._checkpoint_block("sess-9", "s1", "http://t")
+    assert "CHECKPOINT" in block
+    assert "/agent-sessions/sess-9/ingest-log" in block
+    assert "near the turn budget" in block.lower()
+    assert "details" in block
+
+
+def test_session_block_includes_tracking_and_checkpoint():
+    block = pwr._session_block("sess-9", "s1", "http://t")
+    assert "SESSION TRACKING" in block
+    assert "sess-9" in block
+    assert "CHECKPOINT" in block  # checkpoint is appended to the session block
